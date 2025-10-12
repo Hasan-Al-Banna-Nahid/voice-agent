@@ -1,103 +1,147 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import {
+  CheckCircle,
+  Heart,
+  Clock,
+  Sparkles,
+  MessageSquare,
+} from "lucide-react";
+import clsx from "clsx";
+import { useRouter } from "next/navigation";
+
+const questions = [
+  {
+    id: 1,
+    text: "What brings you here today?",
+    icon: <Heart className="w-6 h-6 text-pink-400" />,
+    type: "text",
+  },
+  {
+    id: 2,
+    text: "What challenges are you facing?",
+    icon: <MessageSquare className="w-6 h-6 text-blue-400" />,
+    type: "textarea",
+  },
+  {
+    id: 3,
+    text: "What type of support do you need?",
+    icon: <CheckCircle className="w-6 h-6 text-green-400" />,
+    type: "text",
+  },
+  {
+    id: 4,
+    text: "When would you like to receive check-ins?",
+    icon: <Clock className="w-6 h-6 text-yellow-400" />,
+    type: "checkbox",
+    options: ["Morning", "Evening", "Sunday"],
+  },
+  {
+    id: 5,
+    text: "Any preferences for your AI companion?",
+    icon: <Sparkles className="w-6 h-6 text-purple-400" />,
+    type: "text",
+  },
+];
+
+export default function Onboarding() {
+  const [step, setStep] = useState(1);
+  const [answers, setAnswers] = useState<Record<string, any>>({});
+  const router = useRouter();
+  const current = questions.find((q) => q.id === step);
+
+  const handleNext = () => {
+    if (step < questions.length) setStep(step + 1);
+    else alert("🎉 Onboarding complete! Thank you for sharing!");
+
+    router.push("/dashboard");
+  };
+
+  const handleChange = (value: any) => {
+    setAnswers({ ...answers, [current?.text || ""]: value });
+  };
+  localStorage.setItem("OnBoarding", JSON.stringify(answers));
+
   return (
-    <div className="font-sans grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20">
-      <main className="flex flex-col gap-[32px] row-start-2 items-center sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={180}
-          height={38}
-          priority
-        />
-        <ol className="font-mono list-inside list-decimal text-sm/6 text-center sm:text-left">
-          <li className="mb-2 tracking-[-.01em]">
-            Get started by editing{" "}
-            <code className="bg-black/[.05] dark:bg-white/[.06] font-mono font-semibold px-1 py-0.5 rounded">
-              src/app/page.tsx
-            </code>
-            .
-          </li>
-          <li className="tracking-[-.01em]">
-            Save and see your changes instantly.
-          </li>
-        </ol>
+    <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-indigo-900 via-purple-900 to-black text-white relative overflow-hidden">
+      {/* glowing circles */}
+      <div className="absolute inset-0 blur-3xl opacity-30">
+        <div className="w-96 h-96 bg-pink-500/20 rounded-full absolute -top-20 -left-20" />
+        <div className="w-96 h-96 bg-blue-500/20 rounded-full absolute bottom-0 right-0" />
+      </div>
 
-        <div className="flex gap-4 items-center flex-col sm:flex-row">
-          <a
-            className="rounded-full border border-solid border-transparent transition-colors flex items-center justify-center bg-foreground text-background gap-2 hover:bg-[#383838] dark:hover:bg-[#ccc] font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 sm:w-auto"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={20}
-              height={20}
-            />
-            Deploy now
-          </a>
-          <a
-            className="rounded-full border border-solid border-black/[.08] dark:border-white/[.145] transition-colors flex items-center justify-center hover:bg-[#f2f2f2] dark:hover:bg-[#1a1a1a] hover:border-transparent font-medium text-sm sm:text-base h-10 sm:h-12 px-4 sm:px-5 w-full sm:w-auto md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Read our docs
-          </a>
+      <motion.div
+        key={step}
+        initial={{ opacity: 0, y: 20, scale: 0.98 }}
+        animate={{ opacity: 1, y: 0, scale: 1 }}
+        exit={{ opacity: 0, y: -20, scale: 0.98 }}
+        transition={{ duration: 0.4 }}
+        className="z-10 p-8 rounded-3xl bg-white/10 backdrop-blur-md border border-white/20 shadow-2xl max-w-md w-full text-center glow"
+      >
+        <div className="mb-4 text-sm text-gray-300">
+          Question {step} of {questions.length}
         </div>
-      </main>
-      <footer className="row-start-3 flex gap-[24px] flex-wrap items-center justify-center">
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/file.svg"
-            alt="File icon"
-            width={16}
-            height={16}
+
+        <div className="flex justify-center mb-4">{current?.icon}</div>
+
+        <h2 className="text-2xl font-semibold mb-6">{current?.text}</h2>
+
+        {/* Input */}
+        {current?.type === "text" && (
+          <input
+            type="text"
+            onChange={(e) => handleChange(e.target.value)}
+            className="w-full p-3 rounded-xl bg-white/20 text-white placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"
+            placeholder="Type your answer..."
           />
-          Learn
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <Image
-            aria-hidden
-            src="/window.svg"
-            alt="Window icon"
-            width={16}
-            height={16}
+        )}
+
+        {current?.type === "textarea" && (
+          <textarea
+            onChange={(e) => handleChange(e.target.value)}
+            rows={3}
+            className="w-full p-3 rounded-xl bg-white/20 text-white placeholder-gray-300 focus:outline-none focus:ring-2 focus:ring-purple-500"
+            placeholder="Write your thoughts..."
           />
-          Examples
-        </a>
-        <a
-          className="flex items-center gap-2 hover:underline hover:underline-offset-4"
-          href="https://nextjs.org?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-          target="_blank"
-          rel="noopener noreferrer"
+        )}
+
+        {current?.type === "checkbox" && (
+          <div className="flex flex-col items-start space-y-2">
+            {current.options?.map((opt) => (
+              <label
+                key={opt}
+                className="flex items-center space-x-2 cursor-pointer"
+              >
+                <input
+                  type="checkbox"
+                  onChange={(e) =>
+                    handleChange({
+                      ...(answers[current.text] || {}),
+                      [opt]: e.target.checked,
+                    })
+                  }
+                  className="accent-purple-500 w-4 h-4"
+                />
+                <span>{opt}</span>
+              </label>
+            ))}
+          </div>
+        )}
+
+        <motion.button
+          onClick={handleNext}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+          className={clsx(
+            "mt-8 px-6 py-3 rounded-full font-semibold transition-all",
+            "bg-gradient-to-r from-pink-500 to-purple-600 text-white shadow-lg shadow-purple-500/30 hover:shadow-purple-500/60"
+          )}
         >
-          <Image
-            aria-hidden
-            src="/globe.svg"
-            alt="Globe icon"
-            width={16}
-            height={16}
-          />
-          Go to nextjs.org →
-        </a>
-      </footer>
+          {step < questions.length ? "Next →" : "Finish 🎉"}
+        </motion.button>
+      </motion.div>
     </div>
   );
 }
