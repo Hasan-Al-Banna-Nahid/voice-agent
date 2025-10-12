@@ -62,7 +62,8 @@ export default function Onboarding() {
   const handleChange = (value: any) => {
     setAnswers({ ...answers, [current?.text || ""]: value });
   };
-  localStorage.setItem("OnBoarding", JSON.stringify(answers));
+  typeof window != "undefined" &&
+    localStorage.setItem("OnBoarding", JSON.stringify(answers));
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-indigo-900 via-purple-900 to-black text-white relative overflow-hidden">
