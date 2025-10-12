@@ -53,7 +53,9 @@ export default function VoiceMoodDashboard() {
 
   // Load conversations from localStorage
   useEffect(() => {
-    const saved = localStorage.getItem("voice-mood-conversations");
+    const saved =
+      typeof window != "undefined" &&
+      localStorage.getItem("voice-mood-conversations");
     if (saved) {
       try {
         const parsed = JSON.parse(saved);
@@ -72,10 +74,11 @@ export default function VoiceMoodDashboard() {
   // Save conversations to localStorage
   useEffect(() => {
     if (conversations.length > 0) {
-      localStorage.setItem(
-        "voice-mood-conversations",
-        JSON.stringify(conversations)
-      );
+      typeof window != "undefined" &&
+        localStorage.setItem(
+          "voice-mood-conversations",
+          JSON.stringify(conversations)
+        );
     }
   }, [conversations]);
 
@@ -498,7 +501,8 @@ export default function VoiceMoodDashboard() {
 
   const clearHistory = () => {
     setConversations([]);
-    localStorage.removeItem("voice-mood-conversations");
+    typeof window != "undefined" &&
+      localStorage.removeItem("voice-mood-conversations");
   };
 
   const getMicStatusText = () => {
