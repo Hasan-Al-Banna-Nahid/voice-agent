@@ -31,7 +31,7 @@ interface SpeechRecognitionErrorEvent {
 export default function VoiceMoodDashboard() {
   const [isCallActive, setIsCallActive] = useState(false);
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
-  //   const [currentTranscript, setCurrentTranscript] = useState("");
+  const [currentTranscript, setCurrentTranscript] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -156,7 +156,7 @@ export default function VoiceMoodDashboard() {
 
   const startCall = async () => {
     setError(null);
-    // setCurrentTranscript("");
+    setCurrentTranscript("");
 
     try {
       // Check microphone permission first
@@ -194,7 +194,7 @@ export default function VoiceMoodDashboard() {
 
   const endCall = () => {
     setIsCallActive(false);
-    // setCurrentTranscript("");
+    setCurrentTranscript("");
     setError(null);
     stopSpeechRecognition();
     stopSpeechSynthesis();
@@ -252,25 +252,25 @@ export default function VoiceMoodDashboard() {
         }
       }
 
-      // Update UI with interim results
-      //   if (interimTranscript) {
-      //     setCurrentTranscript((prev) => {
-      //       const base = prev.split("|")[0].trim();
-      //       return base + (base ? " " : "") + interimTranscript + " |";
-      //     });
-      //   }
+      //   Update UI with interim results
+      if (interimTranscript) {
+        setCurrentTranscript((prev) => {
+          const base = prev.split("|")[0].trim();
+          return base + (base ? " " : "") + interimTranscript + " |";
+        });
+      }
 
-      // Process final results
-      //   if (finalTranscript) {
-      //     setCurrentTranscript((prev) => {
-      //       const base = prev.split("|")[0].trim();
-      //       return base + (base ? " " : "") + finalTranscript;
-      //     });
+      //   Process final results
+      if (finalTranscript) {
+        setCurrentTranscript((prev) => {
+          const base = prev.split("|")[0].trim();
+          return base + (base ? " " : "") + finalTranscript;
+        });
 
-      //     setIsProcessing(true);
-      //     await processUserMessage(finalTranscript.trim());
-      //     setIsProcessing(false);
-      //   }
+        setIsProcessing(true);
+        await processUserMessage(finalTranscript.trim());
+        setIsProcessing(false);
+      }
     };
 
     recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
