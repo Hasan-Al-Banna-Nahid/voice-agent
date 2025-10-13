@@ -357,7 +357,7 @@ export default function VoiceMoodDashboard() {
         {
           method: "POST",
           headers: {
-            Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
+            Authorization: `Bearer ${process.env.NEXT_PUBLIC_OPENROUTER_API_KEY}`,
             "Content-Type": "application/json",
             "HTTP-Referer": window.location.origin,
             "X-Title": "GPT Voice Mood",
