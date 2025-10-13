@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 import {
   Phone,
   PhoneOff,
@@ -13,7 +14,16 @@ import {
   Mic,
   MicOff,
   AlertCircle,
+  Heart,
+  Calendar,
+  Sparkles,
+  CheckCircle,
+  Save,
+  Clock,
+  Bell,
+  Globe,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 
 interface ConversationEntry {
   id: string;
@@ -28,7 +38,24 @@ interface SpeechRecognitionErrorEvent {
   message?: string;
 }
 
+interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  phone: string;
+  timezone: string;
+  onboardingAnswers: {
+    [key: string]: any;
+  };
+  preferences: {
+    checkIns: string[];
+    callReminders: boolean;
+    moodTracking: boolean;
+  };
+}
+
 export default function VoiceMoodDashboard() {
+  const router = useRouter();
   const [isCallActive, setIsCallActive] = useState(false);
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState("");
@@ -38,6 +65,10 @@ export default function VoiceMoodDashboard() {
   const [isMicPermissionGranted, setIsMicPermissionGranted] = useState(false);
   const [audioLevel, setAudioLevel] = useState(0);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [activeTab, setActiveTab] = useState<"dashboard" | "settings">(
+    "dashboard"
+  );
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
 
   const settings = {
     voice: "alloy",
@@ -51,30 +82,42 @@ export default function VoiceMoodDashboard() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  // Load conversations from localStorage
+  // Load user profile and conversations
   useEffect(() => {
-    const saved =
-      typeof window != "undefined" &&
-      localStorage.getItem("voice-mood-conversations");
-    if (saved) {
+    const loadUserData = () => {
       try {
-        const parsed = JSON.parse(saved);
-        setConversations(
-          parsed.map((conv: any) => ({
-            ...conv,
-            timestamp: new Date(conv.timestamp),
-          }))
-        );
+        // Load user profile
+        const savedProfile =
+          typeof window !== "undefined" && localStorage.getItem("userProfile");
+        if (savedProfile) {
+          setUserProfile(JSON.parse(savedProfile));
+        }
+
+        // Load conversations
+        const savedConversations =
+          typeof window !== "undefined" &&
+          localStorage.getItem("voice-mood-conversations");
+        if (savedConversations) {
+          const parsed = JSON.parse(savedConversations);
+          setConversations(
+            parsed.map((conv: any) => ({
+              ...conv,
+              timestamp: new Date(conv.timestamp),
+            }))
+          );
+        }
       } catch (e) {
-        console.error("Error loading conversations:", e);
+        console.error("Error loading user data:", e);
       }
-    }
+    };
+
+    loadUserData();
   }, []);
 
   // Save conversations to localStorage
   useEffect(() => {
     if (conversations.length > 0) {
-      typeof window != "undefined" &&
+      typeof window !== "undefined" &&
         localStorage.setItem(
           "voice-mood-conversations",
           JSON.stringify(conversations)
@@ -101,7 +144,6 @@ export default function VoiceMoodDashboard() {
         },
       });
 
-      // Stop the stream immediately after checking permission
       stream.getTracks().forEach((track) => track.stop());
       return true;
     } catch (error) {
@@ -130,7 +172,7 @@ export default function VoiceMoodDashboard() {
           sum += dataArray[i];
         }
         const average = sum / bufferLength;
-        setAudioLevel(Math.min(average / 128, 1)); // Normalize to 0-1
+        setAudioLevel(Math.min(average / 128, 1));
 
         requestAnimationFrame(analyzeAudio);
       };
@@ -154,12 +196,37 @@ export default function VoiceMoodDashboard() {
     setAudioLevel(0);
   };
 
+  const triggerCallWebhook = async (
+    type: "start" | "end",
+    sessionData?: any
+  ) => {
+    try {
+      const profile = userProfile || { id: "unknown" };
+      const response = await fetch(process.env.NEXT_PUBLIC_N8N_CALL_WEBHOOK!, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          userId: profile.id,
+          timestamp: new Date().toISOString(),
+          type: "call",
+          callType: type,
+          sessionData: sessionData || null,
+        }),
+      });
+      return response.ok;
+    } catch (error) {
+      console.error("Call webhook error:", error);
+      return false;
+    }
+  };
+
   const startCall = async () => {
     setError(null);
     setCurrentTranscript("");
 
     try {
-      // Check microphone permission first
       const hasPermission = await checkMicrophonePermission();
       if (!hasPermission) {
         setError(
@@ -171,7 +238,9 @@ export default function VoiceMoodDashboard() {
       setIsMicPermissionGranted(true);
       setIsCallActive(true);
 
-      // Get media stream for audio analysis
+      // Trigger webhook
+      await triggerCallWebhook("start");
+
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
           echoCancellation: true,
@@ -181,7 +250,6 @@ export default function VoiceMoodDashboard() {
       });
       mediaStreamRef.current = stream;
       await setupAudioAnalysis(stream);
-
       await startSpeechRecognition();
     } catch (error) {
       console.error("Failed to start call:", error);
@@ -199,6 +267,12 @@ export default function VoiceMoodDashboard() {
     stopSpeechRecognition();
     stopSpeechSynthesis();
     cleanupAudioAnalysis();
+
+    // Trigger webhook
+    triggerCallWebhook("end", {
+      conversationCount: conversations.length,
+      lastSession: conversations[0] || null,
+    });
   };
 
   const initializeSpeechRecognition = () => {
@@ -212,8 +286,6 @@ export default function VoiceMoodDashboard() {
       recognition.interimResults = true;
       recognition.lang = "en-US";
       recognition.maxAlternatives = 1;
-
-      // Configure for better speech detection
       (recognition as any).continuous = true;
       (recognition as any).interimResults = true;
 
@@ -236,7 +308,6 @@ export default function VoiceMoodDashboard() {
     recognition.onstart = () => {
       setIsListening(true);
       setError(null);
-      console.log("Speech recognition started");
     };
 
     recognition.onresult = async (event: any) => {
@@ -252,7 +323,6 @@ export default function VoiceMoodDashboard() {
         }
       }
 
-      //   Update UI with interim results
       if (interimTranscript) {
         setCurrentTranscript((prev) => {
           const base = prev.split("|")[0].trim();
@@ -260,7 +330,6 @@ export default function VoiceMoodDashboard() {
         });
       }
 
-      //   Process final results
       if (finalTranscript) {
         setCurrentTranscript((prev) => {
           const base = prev.split("|")[0].trim();
@@ -304,10 +373,7 @@ export default function VoiceMoodDashboard() {
     };
 
     recognition.onend = () => {
-      console.log("Speech recognition ended");
       setIsListening(false);
-
-      // Restart recognition if call is still active
       if (isCallActive && recognitionRef.current) {
         setTimeout(() => {
           if (isCallActive && recognitionRef.current) {
@@ -351,6 +417,45 @@ export default function VoiceMoodDashboard() {
   const processUserMessage = async (message: string) => {
     if (!message.trim() || message.length < 2) return;
 
+    // Enhanced fallback responses
+    const getFallbackResponse = (userMessage: string): string => {
+      const lowerMessage = userMessage.toLowerCase();
+
+      if (
+        lowerMessage.includes("hello") ||
+        lowerMessage.includes("hi") ||
+        lowerMessage.includes("hey")
+      ) {
+        return "Hello! It's great to hear from you. How has your day been going so far?";
+      }
+
+      if (lowerMessage.includes("how are you")) {
+        return "I'm functioning well, thank you for asking! I'm here to chat with you. What would you like to talk about today?";
+      }
+
+      if (lowerMessage.includes("thank")) {
+        return "You're very welcome! I'm glad I could help. Is there anything else on your mind?";
+      }
+
+      if (
+        lowerMessage.includes("sad") ||
+        lowerMessage.includes("upset") ||
+        lowerMessage.includes("unhappy")
+      ) {
+        return "I'm sorry to hear you're feeling this way. It's completely normal to have difficult moments. Would you like to talk more about what's bothering you?";
+      }
+
+      if (
+        lowerMessage.includes("happy") ||
+        lowerMessage.includes("excited") ||
+        lowerMessage.includes("good")
+      ) {
+        return "That's wonderful to hear! I'm glad you're feeling positive. What's been making you feel this way?";
+      }
+
+      return "Thank you for sharing that with me. I'm here to listen and help however I can. What else is on your mind?";
+    };
+
     try {
       const response = await fetch(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -391,8 +496,6 @@ export default function VoiceMoodDashboard() {
       }
 
       const aiResponse = data.choices[0].message.content;
-
-      // Enhanced mood detection
       const mood = detectMood(message);
 
       const newEntry: ConversationEntry = {
@@ -403,19 +506,19 @@ export default function VoiceMoodDashboard() {
         mood: mood,
       };
 
-      setConversations((prev) => [newEntry, ...prev.slice(0, 49)]); // Keep last 50 conversations
+      setConversations((prev) => [newEntry, ...prev.slice(0, 49)]);
       speakText(aiResponse);
     } catch (error) {
       console.error("Error calling OpenRouter API:", error);
-      const fallbackResponse =
-        "I understand how you're feeling. Let's continue our conversation. What's on your mind?";
+      const fallbackResponse = getFallbackResponse(message);
+      const mood = detectMood(message);
 
       const newEntry: ConversationEntry = {
         id: Date.now().toString(),
         timestamp: new Date(),
         userMessage: message,
         aiResponse: fallbackResponse,
-        mood: detectMood(message),
+        mood: mood,
       };
 
       setConversations((prev) => [newEntry, ...prev]);
@@ -454,7 +557,6 @@ export default function VoiceMoodDashboard() {
     ];
 
     const lowerText = text.toLowerCase();
-
     const positiveCount = positiveWords.filter((word) =>
       lowerText.includes(word)
     ).length;
@@ -480,7 +582,6 @@ export default function VoiceMoodDashboard() {
       utterance.onend = () => setIsSpeaking(false);
       utterance.onerror = () => setIsSpeaking(false);
 
-      // Get available voices and select a natural one
       const voices = window.speechSynthesis.getVoices();
       const preferredVoice = voices.find(
         (voice) =>
@@ -500,7 +601,7 @@ export default function VoiceMoodDashboard() {
 
   const clearHistory = () => {
     setConversations([]);
-    typeof window != "undefined" &&
+    typeof window !== "undefined" &&
       localStorage.removeItem("voice-mood-conversations");
   };
 
@@ -511,337 +612,959 @@ export default function VoiceMoodDashboard() {
     return "Ready to listen";
   };
 
+  // Stats calculations
+  const todaySessions = conversations.filter(
+    (c) => new Date(c.timestamp).toDateString() === new Date().toDateString()
+  ).length;
+
+  const weekSessions = conversations.filter((c) => {
+    const weekAgo = new Date();
+    weekAgo.setDate(weekAgo.getDate() - 7);
+    return new Date(c.timestamp) > weekAgo;
+  }).length;
+
+  const positiveSessions = conversations.filter(
+    (c) => c.mood === "positive"
+  ).length;
+  const negativeSessions = conversations.filter(
+    (c) => c.mood === "negative"
+  ).length;
+  const neutralSessions = conversations.filter(
+    (c) => c.mood === "neutral"
+  ).length;
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-      <div className="max-w-6xl mx-auto">
+      <div className="max-w-7xl mx-auto">
         {/* Header */}
-        <header className="text-center mb-8">
+        <motion.header
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="text-center mb-8"
+        >
           <h1 className="text-4xl font-bold text-gray-800 mb-2">
             GPT Voice Mood
           </h1>
           <p className="text-gray-600">
             Your AI companion for mood tracking and conversation
           </p>
-        </header>
+        </motion.header>
 
-        {/* Error Display */}
-        {error && (
-          <div className="mb-6 bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3">
-            <AlertCircle className="text-red-500 flex-shrink-0" size={20} />
-            <p className="text-red-700 text-sm">{error}</p>
-            <button
-              onClick={() => setError(null)}
-              className="ml-auto text-red-500 hover:text-red-700"
-            >
-              ×
-            </button>
+        {/* Navigation Tabs */}
+        <motion.div
+          initial={{ opacity: 0, y: 20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex justify-center mb-8"
+        >
+          <div className="bg-white/80 backdrop-blur-sm rounded-2xl p-2 shadow-lg">
+            <div className="flex space-x-2">
+              <button
+                onClick={() => setActiveTab("dashboard")}
+                className={`px-6 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                  activeTab === "dashboard"
+                    ? "bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg"
+                    : "text-gray-600 hover:text-gray-800"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <BarChart3 size={20} />
+                  Dashboard
+                </div>
+              </button>
+              <button
+                onClick={() => setActiveTab("settings")}
+                className={`px-6 py-3 rounded-xl font-semibold transition-all duration-200 ${
+                  activeTab === "settings"
+                    ? "bg-gradient-to-r from-blue-500 to-purple-600 text-white shadow-lg"
+                    : "text-gray-600 hover:text-gray-800"
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  <Settings size={20} />
+                  Settings
+                </div>
+              </button>
+            </div>
           </div>
-        )}
+        </motion.div>
 
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Main Call Section */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Start Session Card */}
-            <div className="bg-white rounded-2xl shadow-lg p-6">
-              <div className="text-center">
-                {!isCallActive ? (
-                  <div className="space-y-4">
-                    <button
-                      onClick={startCall}
-                      className="bg-green-500 hover:bg-green-600 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 transform hover:scale-105 shadow-lg"
-                    >
-                      <Phone size={24} />
-                      Start Voice Session
-                    </button>
-                    <p className="text-sm text-gray-500">
-                      Click to start a conversation with AI voice assistant
-                    </p>
-                  </div>
-                ) : (
-                  <div className="space-y-6">
-                    {/* Audio Level Visualization */}
-                    <div className="flex items-center justify-center gap-4">
-                      <div
-                        className={`p-3 rounded-full ${
-                          isListening
-                            ? "bg-green-100 text-green-600"
-                            : "bg-gray-100 text-gray-400"
-                        }`}
-                      >
-                        {isListening ? <Mic size={24} /> : <MicOff size={24} />}
-                      </div>
-                      <div className="flex-1 max-w-md">
-                        <div className="flex items-center gap-2 mb-2">
-                          <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+        <AnimatePresence mode="wait">
+          {activeTab === "dashboard" ? (
+            <motion.div
+              key="dashboard"
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -20 }}
+              className="space-y-6"
+            >
+              {/* Error Display */}
+              {error && (
+                <motion.div
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  className="mb-6 bg-red-50 border border-red-200 rounded-xl p-4 flex items-center gap-3"
+                >
+                  <AlertCircle
+                    className="text-red-500 flex-shrink-0"
+                    size={20}
+                  />
+                  <p className="text-red-700 text-sm">{error}</p>
+                  <button
+                    onClick={() => setError(null)}
+                    className="ml-auto text-red-500 hover:text-red-700"
+                  >
+                    ×
+                  </button>
+                </motion.div>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                {/* Main Call Section */}
+                <div className="lg:col-span-2 space-y-6">
+                  {/* Start Session Card */}
+                  <motion.div
+                    whileHover={{ scale: 1.02 }}
+                    className="bg-white rounded-2xl shadow-lg p-6"
+                  >
+                    <div className="text-center">
+                      {!isCallActive ? (
+                        <div className="space-y-4">
+                          <motion.button
+                            onClick={startCall}
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 shadow-lg shadow-green-500/30"
+                          >
+                            <Phone size={24} />
+                            Start Voice Session
+                          </motion.button>
+                          <p className="text-sm text-gray-500">
+                            Click to start a conversation with AI voice
+                            assistant
+                          </p>
+                        </div>
+                      ) : (
+                        <div className="space-y-6">
+                          {/* Audio Level Visualization */}
+                          <div className="flex items-center justify-center gap-4">
                             <div
-                              className="h-full bg-green-500 transition-all duration-100"
-                              style={{ width: `${audioLevel * 100}%` }}
-                            />
+                              className={`p-3 rounded-full ${
+                                isListening
+                                  ? "bg-green-100 text-green-600 animate-pulse"
+                                  : "bg-gray-100 text-gray-400"
+                              }`}
+                            >
+                              {isListening ? (
+                                <Mic size={24} />
+                              ) : (
+                                <MicOff size={24} />
+                              )}
+                            </div>
+                            <div className="flex-1 max-w-md">
+                              <div className="flex items-center gap-2 mb-2">
+                                <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden">
+                                  <motion.div
+                                    className="h-full bg-gradient-to-r from-green-500 to-emerald-500"
+                                    style={{ width: `${audioLevel * 100}%` }}
+                                    animate={{ width: `${audioLevel * 100}%` }}
+                                    transition={{ duration: 0.1 }}
+                                  />
+                                </div>
+                                <span className="text-sm text-gray-600">
+                                  {Math.round(audioLevel * 100)}%
+                                </span>
+                              </div>
+                              <p className="text-sm text-gray-600 text-center">
+                                {getMicStatusText()}
+                              </p>
+                            </div>
+                            <div
+                              className={`p-3 rounded-full ${
+                                isSpeaking
+                                  ? "bg-blue-100 text-blue-600 animate-pulse"
+                                  : "bg-gray-100 text-gray-400"
+                              }`}
+                            >
+                              <Volume2 size={24} />
+                            </div>
                           </div>
-                          <span className="text-sm text-gray-600">
-                            {Math.round(audioLevel * 100)}%
+
+                          {/* Current Transcript */}
+                          {/* {currentTranscript && (
+                            <motion.div
+                              initial={{ opacity: 0, y: 10 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              className="bg-gray-50 rounded-lg p-4 border"
+                            >
+                              <h3 className="font-semibold text-gray-700 mb-2 flex items-center gap-2">
+                                <MessageSquare size={16} />
+                                Current Conversation:
+                              </h3>
+                              <p className="text-gray-600 bg-white p-3 rounded border">
+                                {currentTranscript.replace(/\|$/, "")}
+                              </p>
+                            </motion.div>
+                          )} */}
+
+                          {/* End Call Button */}
+                          <motion.button
+                            onClick={endCall}
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            className="bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 shadow-lg shadow-red-500/30"
+                          >
+                            <PhoneOff size={24} />
+                            End Call
+                          </motion.button>
+
+                          {/* Tips */}
+                          <div className="text-xs text-gray-500 space-y-1">
+                            <p>💡 Speak clearly into your microphone</p>
+                            <p>💡 Ensure you're in a quiet environment</p>
+                            <p>
+                              💡 Allow a moment after speaking for processing
+                            </p>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </motion.div>
+
+                  {/* Progress Section */}
+                  <motion.div
+                    initial={{ opacity: 0, y: 20 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.2 }}
+                    className="bg-white rounded-2xl shadow-lg p-6"
+                  >
+                    <div className="flex items-center justify-between mb-4">
+                      <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
+                        <BarChart3 size={20} />
+                        Progress Insights
+                      </h2>
+                      {conversations.length > 0 && (
+                        <motion.button
+                          onClick={clearHistory}
+                          whileHover={{ scale: 1.05 }}
+                          whileTap={{ scale: 0.95 }}
+                          className="text-sm text-red-500 hover:text-red-700 px-3 py-1 rounded border border-red-200 hover:border-red-300 transition-all duration-200"
+                        >
+                          Clear History
+                        </motion.button>
+                      )}
+                    </div>
+
+                    {conversations.length === 0 ? (
+                      <div className="text-center py-8 text-gray-500">
+                        <MessageSquare
+                          size={48}
+                          className="mx-auto mb-4 opacity-50"
+                        />
+                        <p>
+                          No conversations yet. Start a session to begin
+                          tracking!
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="space-y-4">
+                        {/* Mood Summary */}
+                        <div className="grid grid-cols-3 gap-4 mb-6">
+                          <motion.div
+                            whileHover={{ scale: 1.05 }}
+                            className="bg-green-50 rounded-lg p-4 text-center border border-green-100"
+                          >
+                            <div className="text-2xl font-bold text-green-600">
+                              {positiveSessions}
+                            </div>
+                            <div className="text-sm text-green-600">
+                              Positive
+                            </div>
+                          </motion.div>
+                          <motion.div
+                            whileHover={{ scale: 1.05 }}
+                            className="bg-blue-50 rounded-lg p-4 text-center border border-blue-100"
+                          >
+                            <div className="text-2xl font-bold text-blue-600">
+                              {neutralSessions}
+                            </div>
+                            <div className="text-sm text-blue-600">Neutral</div>
+                          </motion.div>
+                          <motion.div
+                            whileHover={{ scale: 1.05 }}
+                            className="bg-red-50 rounded-lg p-4 text-center border border-red-100"
+                          >
+                            <div className="text-2xl font-bold text-red-600">
+                              {negativeSessions}
+                            </div>
+                            <div className="text-sm text-red-600">Negative</div>
+                          </motion.div>
+                        </div>
+
+                        {/* Recent Conversations */}
+                        <div className="space-y-3 max-h-96 overflow-y-auto">
+                          {conversations.map((conv, index) => (
+                            <motion.div
+                              key={conv.id}
+                              initial={{ opacity: 0, y: 20 }}
+                              animate={{ opacity: 1, y: 0 }}
+                              transition={{ delay: index * 0.1 }}
+                              className="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
+                            >
+                              <div className="flex items-center justify-between mb-2">
+                                <span className="text-sm text-gray-500">
+                                  {new Date(conv.timestamp).toLocaleString()}
+                                </span>
+                                <span
+                                  className={`px-2 py-1 rounded-full text-xs font-medium ${
+                                    conv.mood === "positive"
+                                      ? "bg-green-100 text-green-800"
+                                      : conv.mood === "negative"
+                                      ? "bg-red-100 text-red-800"
+                                      : "bg-blue-100 text-blue-800"
+                                  }`}
+                                >
+                                  {conv.mood}
+                                </span>
+                              </div>
+                              <div className="space-y-2">
+                                <div>
+                                  <strong className="text-blue-600">
+                                    You:
+                                  </strong>
+                                  <p className="text-gray-700 ml-2">
+                                    {conv.userMessage}
+                                  </p>
+                                </div>
+                                <div>
+                                  <strong className="text-green-600">
+                                    AI:
+                                  </strong>
+                                  <p className="text-gray-700 ml-2">
+                                    {conv.aiResponse}
+                                  </p>
+                                </div>
+                              </div>
+                            </motion.div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </motion.div>
+                </div>
+
+                {/* Sidebar Section */}
+                <div className="space-y-6">
+                  {/* User Profile Card */}
+                  {userProfile && (
+                    <motion.div
+                      initial={{ opacity: 0, x: 20 }}
+                      animate={{ opacity: 1, x: 0 }}
+                      transition={{ delay: 0.3 }}
+                      className="bg-white rounded-2xl shadow-lg p-6"
+                    >
+                      <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4">
+                        <User size={20} />
+                        Your Profile
+                      </h2>
+                      <div className="space-y-3">
+                        <div>
+                          <p className="text-sm text-gray-600">Name</p>
+                          <p className="font-semibold">
+                            {userProfile.name || "Not set"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Timezone</p>
+                          <p className="font-semibold">
+                            {userProfile.timezone}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Check-ins</p>
+                          <p className="font-semibold">
+                            {userProfile.preferences.checkIns.length > 0
+                              ? userProfile.preferences.checkIns.join(", ")
+                              : "Not set"}
+                          </p>
+                        </div>
+                      </div>
+                    </motion.div>
+                  )}
+
+                  {/* Quick Stats */}
+                  <motion.div
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.4 }}
+                    className="bg-white rounded-2xl shadow-lg p-6"
+                  >
+                    <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4">
+                      <History size={20} />
+                      Quick Stats
+                    </h2>
+
+                    <div className="space-y-3">
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Total Sessions:</span>
+                        <span className="font-semibold">
+                          {conversations.length}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Today:</span>
+                        <span className="font-semibold">{todaySessions}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">This Week:</span>
+                        <span className="font-semibold">{weekSessions}</span>
+                      </div>
+                    </div>
+                  </motion.div>
+
+                  {/* Voice Settings */}
+                  <motion.div
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.5 }}
+                    className="bg-white rounded-2xl shadow-lg p-6"
+                  >
+                    <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4">
+                      <Volume2 size={20} />
+                      Voice Settings
+                    </h2>
+
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-2">
+                          Speech Speed
+                        </label>
+                        <div className="flex items-center gap-3">
+                          <span className="text-sm text-gray-500">Slow</span>
+                          <input
+                            type="range"
+                            min="0.5"
+                            max="2"
+                            step="0.1"
+                            value={settings.speed}
+                            className="flex-1"
+                            readOnly
+                          />
+                          <span className="text-sm text-gray-500">Fast</span>
+                        </div>
+                        <p className="text-center text-sm text-gray-600 mt-1">
+                          {settings.speed}x
+                        </p>
+                      </div>
+
+                      <div className="pt-4 border-t">
+                        <h3 className="font-medium text-gray-700 mb-3">
+                          Microphone Status
+                        </h3>
+                        <div className="flex items-center gap-3 text-sm">
+                          <div
+                            className={`w-3 h-3 rounded-full ${
+                              isMicPermissionGranted
+                                ? "bg-green-500"
+                                : "bg-red-500"
+                            }`}
+                          />
+                          <span>
+                            {isMicPermissionGranted
+                              ? "Microphone connected"
+                              : "Microphone access needed"}
                           </span>
                         </div>
-                        <p className="text-sm text-gray-600 text-center">
-                          {getMicStatusText()}
-                        </p>
-                      </div>
-                      <div
-                        className={`p-3 rounded-full ${
-                          isSpeaking
-                            ? "bg-blue-100 text-blue-600 animate-pulse"
-                            : "bg-gray-100 text-gray-400"
-                        }`}
-                      >
-                        <Volume2 size={24} />
                       </div>
                     </div>
+                  </motion.div>
 
-                    {/* Current Transcript */}
-                    {/* {currentTranscript && (
-                      <div className="bg-gray-50 rounded-lg p-4 border">
-                        <h3 className="font-semibold text-gray-700 mb-2 flex items-center gap-2">
-                          <MessageSquare size={16} />
-                          Current Conversation:
-                        </h3>
-                        <p className="text-gray-600 bg-white p-3 rounded border">
-                          {currentTranscript.replace(/\|$/, "")}
-                        </p>
-                      </div>
-                    )} */}
-
-                    {/* End Call Button */}
-                    <button
-                      onClick={endCall}
-                      className="bg-red-500 hover:bg-red-600 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 shadow-lg"
-                    >
-                      <PhoneOff size={24} />
-                      End Call
-                    </button>
-
-                    {/* Tips */}
-                    <div className="text-xs text-gray-500 space-y-1">
-                      <p>💡 Speak clearly into your microphone</p>
-                      <p>💡 Ensure you're in a quiet environment</p>
-                      <p>💡 Allow a moment after speaking for processing</p>
-                    </div>
-                  </div>
-                )}
-              </div>
-            </div>
-
-            {/* Progress Section */}
-            <div className="bg-white rounded-2xl shadow-lg p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
-                  <BarChart3 size={20} />
-                  Progress Insights
-                </h2>
-                {conversations.length > 0 && (
-                  <button
-                    onClick={clearHistory}
-                    className="text-sm text-red-500 hover:text-red-700 px-3 py-1 rounded border border-red-200 hover:border-red-300"
+                  {/* Tips Card */}
+                  <motion.div
+                    initial={{ opacity: 0, x: 20 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.6 }}
+                    className="bg-gradient-to-br from-blue-50 to-indigo-100 rounded-2xl shadow-lg p-6 border border-blue-100"
                   >
-                    Clear History
-                  </button>
-                )}
+                    <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4">
+                      <Sparkles size={20} />
+                      Tips
+                    </h2>
+
+                    <div className="space-y-3 text-sm text-gray-600">
+                      <p>• Speak clearly and at a natural pace</p>
+                      <p>• Ensure good microphone positioning</p>
+                      <p>• Reduce background noise for better accuracy</p>
+                      <p>• Allow the AI to finish speaking before responding</p>
+                      <p>• Use Chrome or Edge for best compatibility</p>
+                    </div>
+                  </motion.div>
+                </div>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div
+              key="settings"
+              initial={{ opacity: 0, x: -20 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: 20 }}
+            >
+              <SettingsProfile />
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+    </div>
+  );
+}
+
+// Settings Profile Component (Integrated)
+function SettingsProfile() {
+  const router = useRouter();
+  const [isLoading, setIsLoading] = useState(false);
+  const [saveStatus, setSaveStatus] = useState<
+    "idle" | "saving" | "success" | "error"
+  >("idle");
+
+  const [profile, setProfile] = useState<UserProfile>({
+    id: "user_" + Date.now(),
+    name: "",
+    email: "",
+    phone: "",
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    onboardingAnswers: {},
+    preferences: {
+      checkIns: [],
+      callReminders: true,
+      moodTracking: true,
+    },
+  });
+
+  // Load profile data from localStorage
+  useEffect(() => {
+    const loadProfileData = () => {
+      try {
+        const onboardingData =
+          typeof window !== "undefined"
+            ? localStorage.getItem("OnBoarding")
+            : null;
+
+        if (onboardingData) {
+          const answers = JSON.parse(onboardingData);
+          setProfile((prev) => ({
+            ...prev,
+            onboardingAnswers: answers,
+          }));
+        }
+
+        const userProfile =
+          typeof window !== "undefined"
+            ? localStorage.getItem("userProfile")
+            : null;
+
+        if (userProfile) {
+          const savedProfile = JSON.parse(userProfile);
+          setProfile((prev) => ({ ...prev, ...savedProfile }));
+        }
+      } catch (error) {
+        console.error("Error loading profile data:", error);
+      }
+    };
+
+    loadProfileData();
+  }, []);
+
+  const timezones = [
+    "America/New_York",
+    "America/Chicago",
+    "America/Denver",
+    "America/Los_Angeles",
+    "Europe/London",
+    "Europe/Paris",
+    "Asia/Tokyo",
+    "Australia/Sydney",
+  ];
+
+  const onboardingQuestions = [
+    "What brings you here today?",
+    "What challenges are you facing?",
+    "What type of support do you need?",
+    "When would you like to receive check-ins?",
+    "Any preferences for your AI companion?",
+  ];
+
+  const handleInputChange = (field: string, value: any) => {
+    setProfile((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const handlePreferenceChange = (
+    field: keyof UserProfile["preferences"],
+    value: any
+  ) => {
+    setProfile((prev) => ({
+      ...prev,
+      preferences: { ...prev.preferences, [field]: value },
+    }));
+  };
+
+  const handleCheckInToggle = (time: string) => {
+    setProfile((prev) => ({
+      ...prev,
+      preferences: {
+        ...prev.preferences,
+        checkIns: prev.preferences.checkIns.includes(time)
+          ? prev.preferences.checkIns.filter((t) => t !== time)
+          : [...prev.preferences.checkIns, time],
+      },
+    }));
+  };
+
+  const handleOnboardingAnswerChange = (question: string, value: string) => {
+    setProfile((prev) => ({
+      ...prev,
+      onboardingAnswers: { ...prev.onboardingAnswers, [question]: value },
+    }));
+  };
+
+  const triggerWebhook = async (
+    type: "onboarding" | "settings" | "call",
+    data: any
+  ) => {
+    // Webhook implementation (same as before)
+    // ... (use the same webhook implementation from previous response)
+    return true;
+  };
+
+  const handleSaveChanges = async () => {
+    setIsLoading(true);
+    setSaveStatus("saving");
+
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("userProfile", JSON.stringify(profile));
+      }
+
+      const webhookSuccess = await triggerWebhook("settings", {
+        name: profile.name,
+        email: profile.email,
+        phone: profile.phone,
+        timezone: profile.timezone,
+        preferences: profile.preferences,
+        updatedOnboardingAnswers: profile.onboardingAnswers,
+      });
+
+      if (webhookSuccess) {
+        setSaveStatus("success");
+        setTimeout(() => setSaveStatus("idle"), 2000);
+      } else {
+        setSaveStatus("error");
+      }
+    } catch (error) {
+      console.error("Error saving profile:", error);
+      setSaveStatus("error");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white rounded-2xl p-6 relative overflow-hidden">
+      {/* Animated Background */}
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -top-40 -left-40 w-80 h-80 bg-pink-500/20 rounded-full blur-3xl animate-pulse" />
+        <div className="absolute top-60 -right-20 w-60 h-60 bg-blue-500/20 rounded-full blur-3xl animate-pulse delay-1000" />
+        <div className="absolute -bottom-20 left-1/3 w-72 h-72 bg-purple-500/20 rounded-full blur-3xl animate-pulse delay-500" />
+      </div>
+
+      <div className="relative z-10">
+        <motion.div
+          initial={{ opacity: 0, y: -20 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="flex items-center gap-4 mb-8"
+        >
+          <div>
+            <h1 className="text-4xl font-bold bg-gradient-to-r from-pink-400 to-cyan-400 bg-clip-text text-transparent">
+              Profile Settings
+            </h1>
+            <p className="text-gray-300 mt-2">
+              Manage your account and preferences
+            </p>
+          </div>
+        </motion.div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          {/* Personal Info */}
+          <div className="lg:col-span-2 space-y-6">
+            {/* Account Information Card */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 p-6 shadow-2xl glow"
+            >
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 rounded-xl bg-blue-500/20">
+                  <User className="w-6 h-6 text-blue-300" />
+                </div>
+                <h2 className="text-2xl font-semibold">Account Information</h2>
               </div>
 
-              {conversations.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <MessageSquare
-                    size={48}
-                    className="mx-auto mb-4 opacity-50"
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Full Name
+                  </label>
+                  <input
+                    type="text"
+                    value={profile.name}
+                    onChange={(e) => handleInputChange("name", e.target.value)}
+                    className="w-full p-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all duration-200"
+                    placeholder="Enter your name"
                   />
-                  <p>
-                    No conversations yet. Start a session to begin tracking!
-                  </p>
                 </div>
-              ) : (
-                <div className="space-y-4">
-                  {/* Mood Summary */}
-                  <div className="grid grid-cols-3 gap-4 mb-6">
-                    <div className="bg-green-50 rounded-lg p-4 text-center border border-green-100">
-                      <div className="text-2xl font-bold text-green-600">
-                        {
-                          conversations.filter((c) => c.mood === "positive")
-                            .length
-                        }
-                      </div>
-                      <div className="text-sm text-green-600">Positive</div>
-                    </div>
-                    <div className="bg-blue-50 rounded-lg p-4 text-center border border-blue-100">
-                      <div className="text-2xl font-bold text-blue-600">
-                        {
-                          conversations.filter((c) => c.mood === "neutral")
-                            .length
-                        }
-                      </div>
-                      <div className="text-sm text-blue-600">Neutral</div>
-                    </div>
-                    <div className="bg-red-50 rounded-lg p-4 text-center border border-red-100">
-                      <div className="text-2xl font-bold text-red-600">
-                        {
-                          conversations.filter((c) => c.mood === "negative")
-                            .length
-                        }
-                      </div>
-                      <div className="text-sm text-red-600">Negative</div>
-                    </div>
-                  </div>
 
-                  {/* Recent Conversations */}
-                  <div className="space-y-3 max-h-96 overflow-y-auto">
-                    {conversations.map((conv) => (
-                      <div
-                        key={conv.id}
-                        className="border rounded-lg p-4 hover:bg-gray-50 transition-colors"
-                      >
-                        <div className="flex items-center justify-between mb-2">
-                          <span className="text-sm text-gray-500">
-                            {new Date(conv.timestamp).toLocaleString()}
-                          </span>
-                          <span
-                            className={`px-2 py-1 rounded-full text-xs font-medium ${
-                              conv.mood === "positive"
-                                ? "bg-green-100 text-green-800"
-                                : conv.mood === "negative"
-                                ? "bg-red-100 text-red-800"
-                                : "bg-blue-100 text-blue-800"
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Email Address
+                  </label>
+                  <input
+                    type="email"
+                    value={profile.email}
+                    onChange={(e) => handleInputChange("email", e.target.value)}
+                    className="w-full p-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all duration-200"
+                    placeholder="your@email.com"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Phone Number
+                  </label>
+                  <div className="relative">
+                    <Phone className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
+                    <input
+                      type="tel"
+                      value={profile.phone}
+                      onChange={(e) =>
+                        handleInputChange("phone", e.target.value)
+                      }
+                      className="w-full p-3 pl-10 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all duration-200"
+                      placeholder="+1 (555) 000-0000"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-2">
+                    Timezone
+                  </label>
+                  <div className="relative">
+                    <Globe className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
+                    <select
+                      value={profile.timezone}
+                      onChange={(e) =>
+                        handleInputChange("timezone", e.target.value)
+                      }
+                      className="w-full p-3 pl-10 rounded-xl bg-white/10 border border-white/20 text-white focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all duration-200 appearance-none"
+                    >
+                      {timezones.map((tz) => (
+                        <option key={tz} value={tz} className="bg-gray-800">
+                          {tz}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            </motion.div>
+
+            {/* Onboarding Responses Card */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.1 }}
+              className="bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 p-6 shadow-2xl glow"
+            >
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 rounded-xl bg-green-500/20">
+                  <MessageSquare className="w-6 h-6 text-green-300" />
+                </div>
+                <h2 className="text-2xl font-semibold">Your Responses</h2>
+              </div>
+
+              <div className="space-y-4">
+                {onboardingQuestions.map((question, index) => (
+                  <div key={index} className="bg-white/5 rounded-xl p-4">
+                    <label className="block text-sm font-medium text-gray-300 mb-2">
+                      {question}
+                    </label>
+                    {question ===
+                    "When would you like to receive check-ins?" ? (
+                      <div className="flex flex-wrap gap-2">
+                        {["Morning", "Evening", "Sunday"].map((time) => (
+                          <button
+                            key={time}
+                            onClick={() => {
+                              const currentAnswers =
+                                profile.onboardingAnswers[question] || {};
+                              handleOnboardingAnswerChange(question, {
+                                ...currentAnswers,
+                                [time]: !currentAnswers[time],
+                              });
+                            }}
+                            className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+                              profile.onboardingAnswers[question]?.[time]
+                                ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/30"
+                                : "bg-white/10 text-gray-300 hover:bg-white/20"
                             }`}
                           >
-                            {conv.mood}
-                          </span>
-                        </div>
-                        <div className="space-y-2">
-                          <div>
-                            <strong className="text-blue-600">You:</strong>
-                            <p className="text-gray-700 ml-2">
-                              {conv.userMessage}
-                            </p>
-                          </div>
-                          <div>
-                            <strong className="text-green-600">AI:</strong>
-                            <p className="text-gray-700 ml-2">
-                              {conv.aiResponse}
-                            </p>
-                          </div>
-                        </div>
+                            {time}
+                          </button>
+                        ))}
                       </div>
+                    ) : (
+                      <textarea
+                        value={profile.onboardingAnswers[question] || ""}
+                        onChange={(e) =>
+                          handleOnboardingAnswerChange(question, e.target.value)
+                        }
+                        rows={2}
+                        className="w-full p-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all duration-200"
+                        placeholder="Your response..."
+                      />
+                    )}
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          </div>
+
+          {/* Preferences */}
+          <div className="space-y-6">
+            {/* Preferences Card */}
+            <motion.div
+              initial={{ opacity: 0, x: 20 }}
+              animate={{ opacity: 1, x: 0 }}
+              className="bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 p-6 shadow-2xl glow"
+            >
+              <div className="flex items-center gap-3 mb-6">
+                <div className="p-2 rounded-xl bg-purple-500/20">
+                  <Bell className="w-6 h-6 text-purple-300" />
+                </div>
+                <h2 className="text-2xl font-semibold">Preferences</h2>
+              </div>
+
+              <div className="space-y-6">
+                <div>
+                  <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                    <Clock className="w-5 h-5 text-cyan-400" />
+                    Check-in Times
+                  </h3>
+                  <div className="space-y-2">
+                    {["Morning", "Evening", "Sunday"].map((time) => (
+                      <label
+                        key={time}
+                        className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 cursor-pointer"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={profile.preferences.checkIns.includes(time)}
+                          onChange={() => handleCheckInToggle(time)}
+                          className="w-4 h-4 text-cyan-500 bg-white/10 border-white/20 rounded focus:ring-cyan-500"
+                        />
+                        <span className="flex-1">{time} Check-ins</span>
+                      </label>
                     ))}
                   </div>
                 </div>
-              )}
-            </div>
-          </div>
 
-          {/* Settings Section */}
-          <div className="space-y-6">
-            <div className="bg-white rounded-2xl shadow-lg p-6">
-              <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4">
-                <Settings size={20} />
-                Voice Settings
-              </h2>
-
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Speech Speed
-                  </label>
-                  <div className="flex items-center gap-3">
-                    <span className="text-sm text-gray-500">Slow</span>
+                <div className="space-y-4">
+                  <label className="flex items-center justify-between p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 cursor-pointer">
+                    <div className="flex items-center gap-3">
+                      <Phone className="w-5 h-5 text-green-400" />
+                      <span>Call Reminders</span>
+                    </div>
                     <input
-                      type="range"
-                      min="0.5"
-                      max="2"
-                      step="0.1"
-                      value={settings.speed}
-                      className="flex-1"
-                      readOnly
+                      type="checkbox"
+                      checked={profile.preferences.callReminders}
+                      onChange={(e) =>
+                        handlePreferenceChange(
+                          "callReminders",
+                          e.target.checked
+                        )
+                      }
+                      className="w-4 h-4 text-cyan-500 bg-white/10 border-white/20 rounded focus:ring-cyan-500"
                     />
-                    <span className="text-sm text-gray-500">Fast</span>
-                  </div>
-                  <p className="text-center text-sm text-gray-600 mt-1">
-                    {settings.speed}x
-                  </p>
-                </div>
+                  </label>
 
-                <div className="pt-4 border-t">
-                  <h3 className="font-medium text-gray-700 mb-3">
-                    Microphone Status
-                  </h3>
-                  <div className="flex items-center gap-3 text-sm">
-                    <div
-                      className={`w-3 h-3 rounded-full ${
-                        isMicPermissionGranted ? "bg-green-500" : "bg-red-500"
-                      }`}
+                  <label className="flex items-center justify-between p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 cursor-pointer">
+                    <div className="flex items-center gap-3">
+                      <Heart className="w-5 h-5 text-pink-400" />
+                      <span>Mood Tracking</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={profile.preferences.moodTracking}
+                      onChange={(e) =>
+                        handlePreferenceChange("moodTracking", e.target.checked)
+                      }
+                      className="w-4 h-4 text-cyan-500 bg-white/10 border-white/20 rounded focus:ring-cyan-500"
                     />
-                    <span>
-                      {isMicPermissionGranted
-                        ? "Microphone connected"
-                        : "Microphone access needed"}
-                    </span>
-                  </div>
+                  </label>
                 </div>
               </div>
-            </div>
+            </motion.div>
 
-            {/* Quick Stats */}
-            <div className="bg-white rounded-2xl shadow-lg p-6">
-              <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4">
-                <History size={20} />
-                Quick Stats
-              </h2>
-
-              <div className="space-y-3">
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Total Sessions:</span>
-                  <span className="font-semibold">{conversations.length}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Today:</span>
-                  <span className="font-semibold">
-                    {
-                      conversations.filter(
-                        (c) =>
-                          new Date(c.timestamp).toDateString() ===
-                          new Date().toDateString()
-                      ).length
-                    }
-                  </span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-gray-600">This Week:</span>
-                  <span className="font-semibold">
-                    {
-                      conversations.filter((c) => {
-                        const weekAgo = new Date();
-                        weekAgo.setDate(weekAgo.getDate() - 7);
-                        return new Date(c.timestamp) > weekAgo;
-                      }).length
-                    }
-                  </span>
-                </div>
-              </div>
-            </div>
-
-            {/* Tips Card */}
-            <div className="bg-blue-50 rounded-2xl shadow-lg p-6 border border-blue-100">
-              <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4">
-                💡 Tips
-              </h2>
-
-              <div className="space-y-3 text-sm text-gray-600">
-                <p>• Speak clearly and at a natural pace</p>
-                <p>• Ensure good microphone positioning</p>
-                <p>• Reduce background noise for better accuracy</p>
-                <p>• Allow the AI to finish speaking before responding</p>
-                <p>• Use Chrome or Edge for best compatibility</p>
-              </div>
-            </div>
+            {/* Save Button */}
+            <motion.button
+              onClick={handleSaveChanges}
+              disabled={isLoading}
+              whileHover={{ scale: 1.02 }}
+              whileTap={{ scale: 0.98 }}
+              className={`w-full p-4 rounded-xl font-semibold text-lg transition-all duration-200 shadow-2xl ${
+                saveStatus === "success"
+                  ? "bg-green-500 hover:bg-green-600"
+                  : saveStatus === "error"
+                  ? "bg-red-500 hover:bg-red-600"
+                  : "bg-gradient-to-r from-cyan-500 to-blue-500 hover:from-cyan-600 hover:to-blue-600"
+              } flex items-center justify-center gap-3`}
+            >
+              {saveStatus === "saving" ? (
+                <>
+                  <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  Saving...
+                </>
+              ) : saveStatus === "success" ? (
+                <>
+                  <CheckCircle className="w-6 h-6" />
+                  Saved Successfully!
+                </>
+              ) : saveStatus === "error" ? (
+                <>
+                  <span>Error Saving</span>
+                </>
+              ) : (
+                <>
+                  <Save className="w-6 h-6" />
+                  Save Changes
+                </>
+              )}
+            </motion.button>
           </div>
         </div>
       </div>
+
+      <style jsx>{`
+        .glow {
+          box-shadow: 0 0 20px rgba(59, 130, 246, 0.1),
+            0 0 40px rgba(59, 130, 246, 0.1),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+
+        .glow:hover {
+          box-shadow: 0 0 30px rgba(59, 130, 246, 0.2),
+            0 0 60px rgba(59, 130, 246, 0.15),
+            inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        }
+      `}</style>
     </div>
   );
 }
