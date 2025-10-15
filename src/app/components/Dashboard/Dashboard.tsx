@@ -15,13 +15,14 @@ import {
   MicOff,
   AlertCircle,
   Heart,
-  Calendar,
   Sparkles,
   CheckCircle,
   Save,
   Clock,
   Bell,
   Globe,
+  ChevronRight,
+  ChevronLeft,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -45,7 +46,11 @@ interface UserProfile {
   phone: string;
   timezone: string;
   onboardingAnswers: {
-    [key: string]: any;
+    whatBringsYou: string;
+    challenges: string;
+    supportNeeded: string;
+    checkInTimes: string[];
+    aiPreferences: string;
   };
   preferences: {
     checkIns: string[];
@@ -54,8 +59,25 @@ interface UserProfile {
   };
 }
 
+interface OnboardingData {
+  whatBringsYou: string;
+  challenges: string;
+  supportNeeded: string;
+  checkInTimes: string[];
+  aiPreferences: string;
+}
+
 export default function VoiceMoodDashboard() {
   const router = useRouter();
+  const [showOnboarding, setShowOnboarding] = useState(true);
+  const [onboardingData, setOnboardingData] = useState<OnboardingData>({
+    whatBringsYou: "",
+    challenges: "",
+    supportNeeded: "",
+    checkInTimes: [],
+    aiPreferences: "",
+  });
+  const [currentQuestion, setCurrentQuestion] = useState(0);
   const [isCallActive, setIsCallActive] = useState(false);
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
   const [currentTranscript, setCurrentTranscript] = useState("");
@@ -82,18 +104,28 @@ export default function VoiceMoodDashboard() {
   const analyserRef = useRef<AnalyserNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
 
-  // Load user profile and conversations
   useEffect(() => {
-    const loadUserData = () => {
+    const checkOnboardingStatus = () => {
       try {
-        // Load user profile
+        const onboardingCompleted =
+          typeof window !== "undefined" &&
+          localStorage.getItem("onboardingCompleted");
+        const savedOnboardingData =
+          typeof window !== "undefined" && localStorage.getItem("OnBoarding");
+
+        if (!onboardingCompleted && !savedOnboardingData) {
+          setShowOnboarding(true);
+        } else if (savedOnboardingData) {
+          setOnboardingData(JSON.parse(savedOnboardingData));
+          setShowOnboarding(false);
+        }
+
         const savedProfile =
           typeof window !== "undefined" && localStorage.getItem("userProfile");
         if (savedProfile) {
           setUserProfile(JSON.parse(savedProfile));
         }
 
-        // Load conversations
         const savedConversations =
           typeof window !== "undefined" &&
           localStorage.getItem("voice-mood-conversations");
@@ -111,10 +143,9 @@ export default function VoiceMoodDashboard() {
       }
     };
 
-    loadUserData();
+    checkOnboardingStatus();
   }, []);
 
-  // Save conversations to localStorage
   useEffect(() => {
     if (conversations.length > 0) {
       typeof window !== "undefined" &&
@@ -125,7 +156,6 @@ export default function VoiceMoodDashboard() {
     }
   }, [conversations]);
 
-  // Cleanup on unmount
   useEffect(() => {
     return () => {
       stopSpeechRecognition();
@@ -133,6 +163,159 @@ export default function VoiceMoodDashboard() {
       cleanupAudioAnalysis();
     };
   }, []);
+
+  const onboardingQuestions = [
+    {
+      id: "whatBringsYou",
+      question: "What brings you here today?",
+      description: "Tell us what motivated you to seek support",
+      type: "textarea",
+      placeholder: "I'm looking for someone to talk to about...",
+    },
+    {
+      id: "challenges",
+      question: "What challenges are you facing?",
+      description: "Share what's been difficult lately",
+      type: "textarea",
+      placeholder: "I've been struggling with...",
+    },
+    {
+      id: "supportNeeded",
+      question: "What type of support do you need?",
+      description: "How can we best help you?",
+      type: "textarea",
+      placeholder: "I need help with...",
+    },
+    {
+      id: "checkInTimes",
+      question: "When would you like to receive check-ins?",
+      description: "Select your preferred times for wellness check-ins",
+      type: "checkbox",
+      options: ["Morning", "Evening", "Sunday"],
+    },
+    {
+      id: "aiPreferences",
+      question: "Any preferences for your AI companion?",
+      description:
+        "Voice style, tone, or anything else that would make you comfortable",
+      type: "textarea",
+      placeholder: "I prefer a companion that is...",
+    },
+  ];
+
+  const handleOnboardingInputChange = (value: string | string[]) => {
+    const currentQuestionId = onboardingQuestions[currentQuestion].id;
+    setOnboardingData((prev) => ({
+      ...prev,
+      [currentQuestionId]: value,
+    }));
+  };
+
+  const handleCheckboxToggle = (option: string) => {
+    const currentTimes = onboardingData.checkInTimes;
+    const updatedTimes = currentTimes.includes(option)
+      ? currentTimes.filter((time) => time !== option)
+      : [...currentTimes, option];
+
+    handleOnboardingInputChange(updatedTimes);
+  };
+
+  const nextQuestion = () => {
+    if (currentQuestion < onboardingQuestions.length - 1) {
+      setCurrentQuestion((prev) => prev + 1);
+    }
+  };
+
+  const prevQuestion = () => {
+    if (currentQuestion > 0) {
+      setCurrentQuestion((prev) => prev - 1);
+    }
+  };
+
+  const triggerN8nWebhook = async (eventType: string, data: any) => {
+    try {
+      const completeData = {
+        eventType,
+        timestamp: new Date().toISOString(),
+        userProfile: userProfile || {
+          id: "unknown",
+          name: "",
+          email: "",
+          phone: "",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          onboardingAnswers: onboardingData,
+          preferences: {
+            checkIns: [],
+            callReminders: true,
+            moodTracking: true,
+          },
+        },
+        onboardingData: onboardingData,
+        conversations: conversations,
+        ...data,
+      };
+
+      console.log("Sending to n8n webhook:", completeData);
+
+      const response = await fetch(process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL!, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(completeData),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Webhook failed with status: ${response.status}`);
+      }
+
+      return response.ok;
+    } catch (error) {
+      console.error("Webhook error:", error);
+      return false;
+    }
+  };
+
+  const completeOnboarding = async () => {
+    try {
+      if (typeof window !== "undefined") {
+        localStorage.setItem("OnBoarding", JSON.stringify(onboardingData));
+        localStorage.setItem("onboardingCompleted", "true");
+
+        const baseProfile = {
+          id: "user_" + Date.now(),
+          name: "",
+          email: "",
+          phone: "",
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          preferences: {
+            checkIns: onboardingData.checkInTimes,
+            callReminders: true,
+            moodTracking: true,
+          },
+        };
+
+        const updatedProfile: UserProfile = {
+          ...baseProfile,
+          onboardingAnswers: onboardingData,
+        };
+
+        localStorage.setItem("userProfile", JSON.stringify(updatedProfile));
+        setUserProfile(updatedProfile);
+      }
+
+      await triggerN8nWebhook("onboarding_completed", {
+        action: "onboarding_finished",
+        userProfile: userProfile,
+        onboardingQuestions: onboardingQuestions,
+        userResponses: onboardingData,
+      });
+
+      setShowOnboarding(false);
+    } catch (error) {
+      console.error("Error completing onboarding:", error);
+    }
+  };
 
   const checkMicrophonePermission = async (): Promise<boolean> => {
     try {
@@ -143,7 +326,6 @@ export default function VoiceMoodDashboard() {
           autoGainControl: true,
         },
       });
-
       stream.getTracks().forEach((track) => track.stop());
       return true;
     } catch (error) {
@@ -196,32 +378,6 @@ export default function VoiceMoodDashboard() {
     setAudioLevel(0);
   };
 
-  const triggerCallWebhook = async (
-    type: "start" | "end",
-    sessionData?: any
-  ) => {
-    try {
-      const profile = userProfile || { id: "unknown" };
-      const response = await fetch(process.env.NEXT_PUBLIC_N8N_CALL_WEBHOOK!, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          userId: profile.id,
-          timestamp: new Date().toISOString(),
-          type: "call",
-          callType: type,
-          sessionData: sessionData || null,
-        }),
-      });
-      return response.ok;
-    } catch (error) {
-      console.error("Call webhook error:", error);
-      return false;
-    }
-  };
-
   const startCall = async () => {
     setError(null);
     setCurrentTranscript("");
@@ -238,8 +394,11 @@ export default function VoiceMoodDashboard() {
       setIsMicPermissionGranted(true);
       setIsCallActive(true);
 
-      // Trigger webhook
-      await triggerCallWebhook("start");
+      await triggerN8nWebhook("call_started", {
+        action: "call_start",
+        userProfile: userProfile,
+        currentConversations: conversations.length,
+      });
 
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: {
@@ -268,10 +427,11 @@ export default function VoiceMoodDashboard() {
     stopSpeechSynthesis();
     cleanupAudioAnalysis();
 
-    // Trigger webhook
-    triggerCallWebhook("end", {
+    triggerN8nWebhook("call_ended", {
+      action: "call_end",
       conversationCount: conversations.length,
       lastSession: conversations[0] || null,
+      userProfile: userProfile,
     });
   };
 
@@ -417,7 +577,6 @@ export default function VoiceMoodDashboard() {
   const processUserMessage = async (message: string) => {
     if (!message.trim() || message.length < 2) return;
 
-    // Enhanced fallback responses
     const getFallbackResponse = (userMessage: string): string => {
       const lowerMessage = userMessage.toLowerCase();
 
@@ -468,7 +627,7 @@ export default function VoiceMoodDashboard() {
             "X-Title": "GPT Voice Mood",
           },
           body: JSON.stringify({
-            model: "openai/gpt-3.5-turbo",
+            model: "openai/gpt-5-chat",
             messages: [
               {
                 role: "system",
@@ -507,6 +666,14 @@ export default function VoiceMoodDashboard() {
       };
 
       setConversations((prev) => [newEntry, ...prev.slice(0, 49)]);
+
+      await triggerN8nWebhook("conversation_entry", {
+        action: "new_conversation",
+        conversation: newEntry,
+        userProfile: userProfile,
+        totalConversations: conversations.length + 1,
+      });
+
       speakText(aiResponse);
     } catch (error) {
       console.error("Error calling OpenRouter API:", error);
@@ -522,6 +689,14 @@ export default function VoiceMoodDashboard() {
       };
 
       setConversations((prev) => [newEntry, ...prev]);
+
+      await triggerN8nWebhook("conversation_entry_fallback", {
+        action: "fallback_conversation",
+        conversation: newEntry,
+        userProfile: userProfile,
+        error: "OpenRouter API failed, using fallback response",
+      });
+
       speakText(fallbackResponse);
     }
   };
@@ -603,6 +778,11 @@ export default function VoiceMoodDashboard() {
     setConversations([]);
     typeof window !== "undefined" &&
       localStorage.removeItem("voice-mood-conversations");
+
+    triggerN8nWebhook("history_cleared", {
+      action: "clear_history",
+      userProfile: userProfile,
+    });
   };
 
   const getMicStatusText = () => {
@@ -612,7 +792,6 @@ export default function VoiceMoodDashboard() {
     return "Ready to listen";
   };
 
-  // Stats calculations
   const todaySessions = conversations.filter(
     (c) => new Date(c.timestamp).toDateString() === new Date().toDateString()
   ).length;
@@ -633,10 +812,24 @@ export default function VoiceMoodDashboard() {
     (c) => c.mood === "neutral"
   ).length;
 
+  if (showOnboarding) {
+    return (
+      <OnboardingQuestionnaire
+        questions={onboardingQuestions}
+        currentQuestion={currentQuestion}
+        data={onboardingData}
+        onInputChange={handleOnboardingInputChange}
+        onCheckboxToggle={handleCheckboxToggle}
+        onNext={nextQuestion}
+        onPrev={prevQuestion}
+        onComplete={completeOnboarding}
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
       <div className="max-w-7xl mx-auto">
-        {/* Header */}
         <motion.header
           initial={{ opacity: 0, y: -20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -650,7 +843,6 @@ export default function VoiceMoodDashboard() {
           </p>
         </motion.header>
 
-        {/* Navigation Tabs */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -697,7 +889,6 @@ export default function VoiceMoodDashboard() {
               exit={{ opacity: 0, x: -20 }}
               className="space-y-6"
             >
-              {/* Error Display */}
               {error && (
                 <motion.div
                   initial={{ opacity: 0, scale: 0.9 }}
@@ -719,9 +910,7 @@ export default function VoiceMoodDashboard() {
               )}
 
               <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                {/* Main Call Section */}
                 <div className="lg:col-span-2 space-y-6">
-                  {/* Start Session Card */}
                   <motion.div
                     whileHover={{ scale: 1.02 }}
                     className="bg-white rounded-2xl shadow-lg p-6"
@@ -745,7 +934,6 @@ export default function VoiceMoodDashboard() {
                         </div>
                       ) : (
                         <div className="space-y-6">
-                          {/* Audio Level Visualization */}
                           <div className="flex items-center justify-center gap-4">
                             <div
                               className={`p-3 rounded-full ${
@@ -789,24 +977,6 @@ export default function VoiceMoodDashboard() {
                             </div>
                           </div>
 
-                          {/* Current Transcript */}
-                          {/* {currentTranscript && (
-                            <motion.div
-                              initial={{ opacity: 0, y: 10 }}
-                              animate={{ opacity: 1, y: 0 }}
-                              className="bg-gray-50 rounded-lg p-4 border"
-                            >
-                              <h3 className="font-semibold text-gray-700 mb-2 flex items-center gap-2">
-                                <MessageSquare size={16} />
-                                Current Conversation:
-                              </h3>
-                              <p className="text-gray-600 bg-white p-3 rounded border">
-                                {currentTranscript.replace(/\|$/, "")}
-                              </p>
-                            </motion.div>
-                          )} */}
-
-                          {/* End Call Button */}
                           <motion.button
                             onClick={endCall}
                             whileHover={{ scale: 1.05 }}
@@ -817,7 +987,6 @@ export default function VoiceMoodDashboard() {
                             End Call
                           </motion.button>
 
-                          {/* Tips */}
                           <div className="text-xs text-gray-500 space-y-1">
                             <p>💡 Speak clearly into your microphone</p>
                             <p>💡 Ensure you're in a quiet environment</p>
@@ -830,7 +999,6 @@ export default function VoiceMoodDashboard() {
                     </div>
                   </motion.div>
 
-                  {/* Progress Section */}
                   <motion.div
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
@@ -867,7 +1035,6 @@ export default function VoiceMoodDashboard() {
                       </div>
                     ) : (
                       <div className="space-y-4">
-                        {/* Mood Summary */}
                         <div className="grid grid-cols-3 gap-4 mb-6">
                           <motion.div
                             whileHover={{ scale: 1.05 }}
@@ -900,7 +1067,6 @@ export default function VoiceMoodDashboard() {
                           </motion.div>
                         </div>
 
-                        {/* Recent Conversations */}
                         <div className="space-y-3 max-h-96 overflow-y-auto">
                           {conversations.map((conv, index) => (
                             <motion.div
@@ -952,9 +1118,7 @@ export default function VoiceMoodDashboard() {
                   </motion.div>
                 </div>
 
-                {/* Sidebar Section */}
                 <div className="space-y-6">
-                  {/* User Profile Card */}
                   {userProfile && (
                     <motion.div
                       initial={{ opacity: 0, x: 20 }}
@@ -991,7 +1155,6 @@ export default function VoiceMoodDashboard() {
                     </motion.div>
                   )}
 
-                  {/* Quick Stats */}
                   <motion.div
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -1002,7 +1165,6 @@ export default function VoiceMoodDashboard() {
                       <History size={20} />
                       Quick Stats
                     </h2>
-
                     <div className="space-y-3">
                       <div className="flex justify-between">
                         <span className="text-gray-600">Total Sessions:</span>
@@ -1021,7 +1183,6 @@ export default function VoiceMoodDashboard() {
                     </div>
                   </motion.div>
 
-                  {/* Voice Settings */}
                   <motion.div
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -1032,7 +1193,6 @@ export default function VoiceMoodDashboard() {
                       <Volume2 size={20} />
                       Voice Settings
                     </h2>
-
                     <div className="space-y-4">
                       <div>
                         <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1055,7 +1215,6 @@ export default function VoiceMoodDashboard() {
                           {settings.speed}x
                         </p>
                       </div>
-
                       <div className="pt-4 border-t">
                         <h3 className="font-medium text-gray-700 mb-3">
                           Microphone Status
@@ -1078,7 +1237,6 @@ export default function VoiceMoodDashboard() {
                     </div>
                   </motion.div>
 
-                  {/* Tips Card */}
                   <motion.div
                     initial={{ opacity: 0, x: 20 }}
                     animate={{ opacity: 1, x: 0 }}
@@ -1089,7 +1247,6 @@ export default function VoiceMoodDashboard() {
                       <Sparkles size={20} />
                       Tips
                     </h2>
-
                     <div className="space-y-3 text-sm text-gray-600">
                       <p>• Speak clearly and at a natural pace</p>
                       <p>• Ensure good microphone positioning</p>
@@ -1117,21 +1274,197 @@ export default function VoiceMoodDashboard() {
   );
 }
 
-// Settings Profile Component (Integrated)
+function OnboardingQuestionnaire({
+  questions,
+  currentQuestion,
+  data,
+  onInputChange,
+  onCheckboxToggle,
+  onNext,
+  onPrev,
+  onComplete,
+}: {
+  questions: any[];
+  currentQuestion: number;
+  data: OnboardingData;
+  onInputChange: (value: string | string[]) => void;
+  onCheckboxToggle: (option: string) => void;
+  onNext: () => void;
+  onPrev: () => void;
+  onComplete: () => void;
+}) {
+  const currentQ = questions[currentQuestion];
+  const progress = ((currentQuestion + 1) / questions.length) * 100;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-purple-600 via-blue-600 to-cyan-500 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.9 }}
+        animate={{ opacity: 1, scale: 1 }}
+        className="bg-white/10 backdrop-blur-md rounded-3xl border border-white/20 p-8 max-w-2xl w-full shadow-2xl"
+      >
+        <div className="text-center mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <button
+              onClick={onPrev}
+              disabled={currentQuestion === 0}
+              className={`p-2 rounded-full ${
+                currentQuestion === 0
+                  ? "text-white/30 cursor-not-allowed"
+                  : "text-white hover:bg-white/20"
+              } transition-all duration-200`}
+            >
+              <ChevronLeft size={24} />
+            </button>
+
+            <div className="flex-1 mx-4">
+              <div className="flex justify-between text-sm text-white/80 mb-2">
+                <span>
+                  Question {currentQuestion + 1} of {questions.length}
+                </span>
+                <span>{Math.round(progress)}%</span>
+              </div>
+              <div className="w-full bg-white/20 rounded-full h-2">
+                <motion.div
+                  className="bg-white h-2 rounded-full"
+                  initial={{ width: 0 }}
+                  animate={{ width: `${progress}%` }}
+                  transition={{ duration: 0.5 }}
+                />
+              </div>
+            </div>
+
+            <div className="w-8"></div>
+          </div>
+
+          <motion.h1
+            key={currentQuestion}
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="text-3xl font-bold text-white mb-2"
+          >
+            {currentQ.question}
+          </motion.h1>
+          <p className="text-white/70">{currentQ.description}</p>
+        </div>
+
+        <motion.div
+          key={currentQuestion}
+          initial={{ opacity: 0, x: 20 }}
+          animate={{ opacity: 1, x: 0 }}
+          className="mb-8"
+        >
+          {currentQ.type === "textarea" && (
+            <textarea
+              value={
+                (data[currentQ.id as keyof OnboardingData] as string) || ""
+              }
+              onChange={(e) => onInputChange(e.target.value)}
+              placeholder={currentQ.placeholder}
+              rows={4}
+              className="w-full p-4 rounded-xl bg-white/10 border border-white/20 text-white placeholder-white/50 focus:outline-none focus:ring-2 focus:ring-white/50 resize-none transition-all duration-200"
+            />
+          )}
+
+          {currentQ.type === "checkbox" && (
+            <div className="space-y-3">
+              {currentQ.options.map((option: string) => (
+                <label
+                  key={option}
+                  className={`flex items-center gap-4 p-4 rounded-xl cursor-pointer transition-all duration-200 ${
+                    data.checkInTimes.includes(option)
+                      ? "bg-white/20 border-white/40"
+                      : "bg-white/10 border-white/20 hover:bg-white/15"
+                  } border`}
+                >
+                  <input
+                    type="checkbox"
+                    checked={data.checkInTimes.includes(option)}
+                    onChange={() => onCheckboxToggle(option)}
+                    className="w-5 h-5 text-blue-600 bg-white/20 border-white/30 rounded focus:ring-white/50"
+                  />
+                  <span className="text-white font-medium">
+                    {option} Check-ins
+                  </span>
+                </label>
+              ))}
+            </div>
+          )}
+        </motion.div>
+
+        <div className="flex justify-between items-center">
+          <button
+            onClick={onPrev}
+            disabled={currentQuestion === 0}
+            className={`px-6 py-3 rounded-xl font-semibold transition-all duration-200 flex items-center gap-2 ${
+              currentQuestion === 0
+                ? "text-white/30 cursor-not-allowed"
+                : "text-white hover:bg-white/20"
+            }`}
+          >
+            <ChevronLeft size={20} />
+            Previous
+          </button>
+
+          {currentQuestion === questions.length - 1 ? (
+            <motion.button
+              onClick={onComplete}
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              className="bg-white text-blue-600 px-8 py-3 rounded-xl font-semibold text-lg flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-xl"
+            >
+              Complete Onboarding
+              <CheckCircle size={20} />
+            </motion.button>
+          ) : (
+            <button
+              onClick={onNext}
+              className="bg-white text-blue-600 px-8 py-3 rounded-xl font-semibold text-lg flex items-center gap-2 transition-all duration-200 shadow-lg hover:shadow-xl"
+            >
+              Next
+              <ChevronRight size={20} />
+            </button>
+          )}
+        </div>
+
+        <div className="flex justify-center gap-2 mt-8">
+          {questions.map((_, index) => (
+            <div
+              key={index}
+              className={`w-2 h-2 rounded-full transition-all duration-200 ${
+                index === currentQuestion
+                  ? "bg-white"
+                  : index < currentQuestion
+                  ? "bg-white/60"
+                  : "bg-white/30"
+              }`}
+            />
+          ))}
+        </div>
+      </motion.div>
+    </div>
+  );
+}
+
 function SettingsProfile() {
   const router = useRouter();
   const [isLoading, setIsLoading] = useState(false);
   const [saveStatus, setSaveStatus] = useState<
     "idle" | "saving" | "success" | "error"
   >("idle");
-
   const [profile, setProfile] = useState<UserProfile>({
     id: "user_" + Date.now(),
     name: "",
     email: "",
     phone: "",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    onboardingAnswers: {},
+    onboardingAnswers: {
+      whatBringsYou: "",
+      challenges: "",
+      supportNeeded: "",
+      checkInTimes: [],
+      aiPreferences: "",
+    },
     preferences: {
       checkIns: [],
       callReminders: true,
@@ -1139,7 +1472,6 @@ function SettingsProfile() {
     },
   });
 
-  // Load profile data from localStorage
   useEffect(() => {
     const loadProfileData = () => {
       try {
@@ -1147,7 +1479,6 @@ function SettingsProfile() {
           typeof window !== "undefined"
             ? localStorage.getItem("OnBoarding")
             : null;
-
         if (onboardingData) {
           const answers = JSON.parse(onboardingData);
           setProfile((prev) => ({
@@ -1160,7 +1491,6 @@ function SettingsProfile() {
           typeof window !== "undefined"
             ? localStorage.getItem("userProfile")
             : null;
-
         if (userProfile) {
           const savedProfile = JSON.parse(userProfile);
           setProfile((prev) => ({ ...prev, ...savedProfile }));
@@ -1225,13 +1555,29 @@ function SettingsProfile() {
     }));
   };
 
-  const triggerWebhook = async (
-    type: "onboarding" | "settings" | "call",
-    data: any
-  ) => {
-    // Webhook implementation (same as before)
-    // ... (use the same webhook implementation from previous response)
-    return true;
+  const triggerN8nWebhook = async (eventType: string, data: any) => {
+    try {
+      const webhookData = {
+        eventType,
+        userId: profile.id,
+        timestamp: new Date().toISOString(),
+        userProfile: profile,
+        ...data,
+      };
+
+      const response = await fetch(process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL!, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(webhookData),
+      });
+
+      return response.ok;
+    } catch (error) {
+      console.error("Webhook error:", error);
+      return false;
+    }
   };
 
   const handleSaveChanges = async () => {
@@ -1243,7 +1589,8 @@ function SettingsProfile() {
         localStorage.setItem("userProfile", JSON.stringify(profile));
       }
 
-      const webhookSuccess = await triggerWebhook("settings", {
+      const webhookSuccess = await triggerN8nWebhook("profile_updated", {
+        action: "profile_update",
         name: profile.name,
         email: profile.email,
         phone: profile.phone,
@@ -1268,7 +1615,6 @@ function SettingsProfile() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white rounded-2xl p-6 relative overflow-hidden">
-      {/* Animated Background */}
       <div className="absolute inset-0 overflow-hidden">
         <div className="absolute -top-40 -left-40 w-80 h-80 bg-pink-500/20 rounded-full blur-3xl animate-pulse" />
         <div className="absolute top-60 -right-20 w-60 h-60 bg-blue-500/20 rounded-full blur-3xl animate-pulse delay-1000" />
@@ -1292,9 +1638,7 @@ function SettingsProfile() {
         </motion.div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Personal Info */}
           <div className="lg:col-span-2 space-y-6">
-            {/* Account Information Card */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1376,7 +1720,6 @@ function SettingsProfile() {
               </div>
             </motion.div>
 
-            {/* Onboarding Responses Card */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -1437,9 +1780,7 @@ function SettingsProfile() {
             </motion.div>
           </div>
 
-          {/* Preferences */}
           <div className="space-y-6">
-            {/* Preferences Card */}
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
@@ -1513,7 +1854,6 @@ function SettingsProfile() {
               </div>
             </motion.div>
 
-            {/* Save Button */}
             <motion.button
               onClick={handleSaveChanges}
               disabled={isLoading}
@@ -1538,9 +1878,7 @@ function SettingsProfile() {
                   Saved Successfully!
                 </>
               ) : saveStatus === "error" ? (
-                <>
-                  <span>Error Saving</span>
-                </>
+                <>Error Saving</>
               ) : (
                 <>
                   <Save className="w-6 h-6" />
@@ -1558,7 +1896,6 @@ function SettingsProfile() {
             0 0 40px rgba(59, 130, 246, 0.1),
             inset 0 1px 0 rgba(255, 255, 255, 0.1);
         }
-
         .glow:hover {
           box-shadow: 0 0 30px rgba(59, 130, 246, 0.2),
             0 0 60px rgba(59, 130, 246, 0.15),
