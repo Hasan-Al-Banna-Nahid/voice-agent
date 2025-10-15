@@ -234,30 +234,53 @@ export default function VoiceMoodDashboard() {
 
   const triggerN8nWebhook = async (eventType: string, data: any) => {
     try {
+      const webhookUrl = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL;
+
+      // If no webhook URL is set, use the local API route as default
+      const defaultWebhookUrl =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/api/webhook`
+          : "https://voice-agent-phi-virid.vercel.app/api/webhook";
+
+      const finalWebhookUrl = webhookUrl || defaultWebhookUrl;
+
+      // Validate URL
+      if (
+        !finalWebhookUrl ||
+        finalWebhookUrl.includes("undefined") ||
+        finalWebhookUrl.includes("your_single_n8n_webhook_url_here")
+      ) {
+        console.warn("⚠️ Webhook URL not properly configured, using default");
+        return true; // Don't break the app
+      }
+
       const completeData = {
         eventType,
         timestamp: new Date().toISOString(),
         userProfile: userProfile || {
-          id: "unknown",
+          id: "user_" + Date.now(),
           name: "",
           email: "",
           phone: "",
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           onboardingAnswers: onboardingData,
           preferences: {
-            checkIns: [],
+            checkIns: onboardingData.checkInTimes || [],
             callReminders: true,
             moodTracking: true,
           },
         },
         onboardingData: onboardingData,
-        conversations: conversations,
+        conversations: conversations.slice(0, 5), // Send only recent conversations
+        appVersion: "1.0.0",
+        source: "voice-mood-dashboard",
         ...data,
       };
 
-      console.log("Sending to n8n webhook:", completeData);
+      console.log(`📤 Sending ${eventType} to:`, finalWebhookUrl);
+      console.log("📊 Webhook payload:", completeData);
 
-      const response = await fetch(process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL!, {
+      const response = await fetch(finalWebhookUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -266,12 +289,17 @@ export default function VoiceMoodDashboard() {
       });
 
       if (!response.ok) {
-        throw new Error(`Webhook failed with status: ${response.status}`);
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
       }
 
-      return response.ok;
+      const result = await response.json();
+      console.log("✅ Webhook successful:", result);
+
+      return true;
     } catch (error) {
-      console.error("Webhook error:", error);
+      console.error("❌ Webhook failed:", error);
+      // Don't break the user experience if webhook fails
       return false;
     }
   };
