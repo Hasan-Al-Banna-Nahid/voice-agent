@@ -228,7 +228,7 @@ export default function VoiceMoodDashboard() {
       id: "userName",
       question: "What's your Name?",
       description: "We'll use this to contact you for follow-ups",
-      type: "name",
+      type: "userNameß",
       placeholder: "Hasan Al Banna",
       icon: <Phone className="w-5 h-5" />,
     },
