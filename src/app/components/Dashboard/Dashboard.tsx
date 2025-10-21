@@ -225,6 +225,14 @@ export default function VoiceMoodDashboard() {
       icon: <Heart className="w-5 h-5" />,
     },
     {
+      id: "userName",
+      question: "What's your Name?",
+      description: "We'll use this to contact you for follow-ups",
+      type: "name",
+      placeholder: "Hasan Al Banna",
+      icon: <Phone className="w-5 h-5" />,
+    },
+    {
       id: "contactEmail",
       question: "What's your email address?",
       description: "We'll use this to contact you for follow-ups",
