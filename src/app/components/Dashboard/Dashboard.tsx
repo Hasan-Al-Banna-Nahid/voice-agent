@@ -23,6 +23,12 @@ import {
   Globe,
   ChevronRight,
   ChevronLeft,
+  Mail,
+  Calendar,
+  Zap,
+  Target,
+  Users,
+  Shield,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -32,6 +38,7 @@ interface ConversationEntry {
   userMessage: string;
   aiResponse: string;
   mood?: string;
+  sentiment?: number;
 }
 
 interface SpeechRecognitionErrorEvent {
@@ -45,17 +52,22 @@ interface UserProfile {
   email: string;
   phone: string;
   timezone: string;
+  businessType?: string;
+  company?: string;
   onboardingAnswers: {
     whatBringsYou: string;
     challenges: string;
     supportNeeded: string;
     checkInTimes: string[];
     aiPreferences: string;
+    businessGoals?: string;
+    preferredContact?: string;
   };
   preferences: {
     checkIns: string[];
     callReminders: boolean;
     moodTracking: boolean;
+    businessUpdates: boolean;
   };
 }
 
@@ -65,6 +77,8 @@ interface OnboardingData {
   supportNeeded: string;
   checkInTimes: string[];
   aiPreferences: string;
+  businessGoals?: string;
+  preferredContact?: string;
 }
 
 export default function VoiceMoodDashboard() {
@@ -76,11 +90,12 @@ export default function VoiceMoodDashboard() {
     supportNeeded: "",
     checkInTimes: [],
     aiPreferences: "",
+    businessGoals: "",
+    preferredContact: "",
   });
   const [currentQuestion, setCurrentQuestion] = useState(0);
   const [isCallActive, setIsCallActive] = useState(false);
   const [conversations, setConversations] = useState<ConversationEntry[]>([]);
-  const [currentTranscript, setCurrentTranscript] = useState("");
   const [isListening, setIsListening] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -103,6 +118,8 @@ export default function VoiceMoodDashboard() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
+  const hasSentInitialGreeting = useRef(false);
+  const conversationContext = useRef<string[]>([]);
 
   useEffect(() => {
     const checkOnboardingStatus = () => {
@@ -131,12 +148,17 @@ export default function VoiceMoodDashboard() {
           localStorage.getItem("voice-mood-conversations");
         if (savedConversations) {
           const parsed = JSON.parse(savedConversations);
-          setConversations(
-            parsed.map((conv: any) => ({
-              ...conv,
-              timestamp: new Date(conv.timestamp),
-            }))
-          );
+          const loadedConversations = parsed.map((conv: any) => ({
+            ...conv,
+            timestamp: new Date(conv.timestamp),
+          }));
+          setConversations(loadedConversations);
+
+          // Build conversation context from recent messages
+          conversationContext.current = loadedConversations
+            .slice(-6) // Last 6 conversations for context
+            .flatMap((conv) => [conv.userMessage, conv.aiResponse])
+            .filter((msg) => msg && msg.trim().length > 0);
         }
       } catch (e) {
         console.error("Error loading user data:", e);
@@ -170,28 +192,50 @@ export default function VoiceMoodDashboard() {
       question: "What brings you here today?",
       description: "Tell us what motivated you to seek support",
       type: "textarea",
-      placeholder: "I'm looking for someone to talk to about...",
+      placeholder: "I'm looking for support with...",
+      icon: Target,
     },
     {
       id: "challenges",
-      question: "What challenges are you facing?",
-      description: "Share what's been difficult lately",
+      question: "What challenges are you currently facing?",
+      description:
+        "Share what's been difficult in your business or personal life",
       type: "textarea",
       placeholder: "I've been struggling with...",
+      icon: Zap,
     },
     {
       id: "supportNeeded",
-      question: "What type of support do you need?",
-      description: "How can we best help you?",
+      question: "What type of support do you need most?",
+      description: "How can we best help you achieve your goals?",
       type: "textarea",
       placeholder: "I need help with...",
+      icon: Users,
+    },
+    {
+      id: "businessGoals",
+      question: "What are your main business goals?",
+      description: "Tell us about your professional objectives",
+      type: "textarea",
+      placeholder: "My business goals include...",
+      icon: Target,
     },
     {
       id: "checkInTimes",
-      question: "When would you like to receive check-ins?",
-      description: "Select your preferred times for wellness check-ins",
+      question: "When would you prefer to receive check-ins?",
+      description:
+        "Select your preferred times for wellness and business updates",
       type: "checkbox",
-      options: ["Morning", "Evening", "Sunday"],
+      options: ["Morning", "Afternoon", "Evening", "Weekends"],
+      icon: Clock,
+    },
+    {
+      id: "preferredContact",
+      question: "How would you prefer us to contact you?",
+      description: "Choose your preferred communication method",
+      type: "radio",
+      options: ["Email", "Phone", "Both"],
+      icon: Mail,
     },
     {
       id: "aiPreferences",
@@ -200,6 +244,7 @@ export default function VoiceMoodDashboard() {
         "Voice style, tone, or anything else that would make you comfortable",
       type: "textarea",
       placeholder: "I prefer a companion that is...",
+      icon: Shield,
     },
   ];
 
@@ -212,7 +257,7 @@ export default function VoiceMoodDashboard() {
   };
 
   const handleCheckboxToggle = (option: string) => {
-    const currentTimes = onboardingData.checkInTimes;
+    const currentTimes = onboardingData.checkInTimes || [];
     const updatedTimes = currentTimes.includes(option)
       ? currentTimes.filter((time) => time !== option)
       : [...currentTimes, option];
@@ -220,15 +265,37 @@ export default function VoiceMoodDashboard() {
     handleOnboardingInputChange(updatedTimes);
   };
 
+  const handleRadioSelect = (option: string) => {
+    handleOnboardingInputChange(option);
+  };
+
   const nextQuestion = () => {
+    const currentQ = onboardingQuestions[currentQuestion];
+    const currentValue = onboardingData[currentQ.id as keyof OnboardingData];
+
+    // Validate required fields
+    if (
+      (!currentValue ||
+        (Array.isArray(currentValue) && currentValue.length === 0)) &&
+      currentQ.id !== "aiPreferences"
+    ) {
+      setError("Please provide an answer before continuing");
+      return;
+    }
+
+    setError(null);
+
     if (currentQuestion < onboardingQuestions.length - 1) {
       setCurrentQuestion((prev) => prev + 1);
+    } else {
+      completeOnboarding();
     }
   };
 
   const prevQuestion = () => {
     if (currentQuestion > 0) {
       setCurrentQuestion((prev) => prev - 1);
+      setError(null);
     }
   };
 
@@ -236,7 +303,7 @@ export default function VoiceMoodDashboard() {
     try {
       const webhookUrl = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL;
 
-      // If no webhook URL is set, use the local API route as default
+      // Default webhook URL for development
       const defaultWebhookUrl =
         typeof window !== "undefined"
           ? `${window.location.origin}/api/webhook`
@@ -250,8 +317,7 @@ export default function VoiceMoodDashboard() {
         finalWebhookUrl.includes("undefined") ||
         finalWebhookUrl.includes("your_single_n8n_webhook_url_here")
       ) {
-        console.warn("⚠️ Webhook URL not properly configured, using default");
-        return true; // Don't break the app
+        return { success: true };
       }
 
       const completeData = {
@@ -268,17 +334,15 @@ export default function VoiceMoodDashboard() {
             checkIns: onboardingData.checkInTimes || [],
             callReminders: true,
             moodTracking: true,
+            businessUpdates: true,
           },
         },
         onboardingData: onboardingData,
-        conversations: conversations.slice(0, 5), // Send only recent conversations
-        appVersion: "1.0.0",
+        conversations: conversations.slice(0, 10),
+        appVersion: "2.0.0",
         source: "voice-mood-dashboard",
         ...data,
       };
-
-      console.log(`📤 Sending ${eventType} to:`, finalWebhookUrl);
-      console.log("📊 Webhook payload:", completeData);
 
       const response = await fetch(finalWebhookUrl, {
         method: "POST",
@@ -288,19 +352,10 @@ export default function VoiceMoodDashboard() {
         body: JSON.stringify(completeData),
       });
 
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`HTTP ${response.status}: ${errorText}`);
-      }
-
-      const result = await response.json();
-      console.log("✅ Webhook successful:", result);
-
-      return true;
+      return { success: response.ok };
     } catch (error) {
-      console.error("❌ Webhook failed:", error);
-      // Don't break the user experience if webhook fails
-      return false;
+      console.error("Webhook failed:", error);
+      return { success: false };
     }
   };
 
@@ -317,9 +372,10 @@ export default function VoiceMoodDashboard() {
           phone: "",
           timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
           preferences: {
-            checkIns: onboardingData.checkInTimes,
+            checkIns: onboardingData.checkInTimes || [],
             callReminders: true,
             moodTracking: true,
+            businessUpdates: true,
           },
         };
 
@@ -335,13 +391,15 @@ export default function VoiceMoodDashboard() {
       await triggerN8nWebhook("onboarding_completed", {
         action: "onboarding_finished",
         userProfile: userProfile,
-        onboardingQuestions: onboardingQuestions,
+        onboardingQuestions: onboardingQuestions.map((q) => q.question),
         userResponses: onboardingData,
+        completedAt: new Date().toISOString(),
       });
 
       setShowOnboarding(false);
     } catch (error) {
       console.error("Error completing onboarding:", error);
+      setError("Failed to complete onboarding. Please try again.");
     }
   };
 
@@ -408,7 +466,7 @@ export default function VoiceMoodDashboard() {
 
   const startCall = async () => {
     setError(null);
-    setCurrentTranscript("");
+    hasSentInitialGreeting.current = false;
 
     try {
       const hasPermission = await checkMicrophonePermission();
@@ -426,6 +484,7 @@ export default function VoiceMoodDashboard() {
         action: "call_start",
         userProfile: userProfile,
         currentConversations: conversations.length,
+        timestamp: new Date().toISOString(),
       });
 
       const stream = await navigator.mediaDevices.getUserMedia({
@@ -438,6 +497,13 @@ export default function VoiceMoodDashboard() {
       mediaStreamRef.current = stream;
       await setupAudioAnalysis(stream);
       await startSpeechRecognition();
+
+      // Send initial greeting immediately
+      setTimeout(() => {
+        if (isCallActive && !hasSentInitialGreeting.current) {
+          sendInitialGreeting();
+        }
+      }, 500);
     } catch (error) {
       console.error("Failed to start call:", error);
       setError(
@@ -447,13 +513,41 @@ export default function VoiceMoodDashboard() {
     }
   };
 
+  const sendInitialGreeting = () => {
+    if (hasSentInitialGreeting.current) return;
+
+    const greeting =
+      "Hello! I'm your AI assistant. I'm here to help you with both personal support and business queries. How can I assist you today?";
+
+    const greetingEntry: ConversationEntry = {
+      id: "initial_greeting_" + Date.now(),
+      timestamp: new Date(),
+      userMessage: "",
+      aiResponse: greeting,
+      mood: "neutral",
+    };
+
+    setConversations((prev) => [greetingEntry, ...prev]);
+    speakText(greeting);
+    hasSentInitialGreeting.current = true;
+
+    // Add to conversation context
+    conversationContext.current.push(greeting);
+
+    triggerN8nWebhook("initial_greeting_sent", {
+      action: "ai_greeting",
+      message: greeting,
+      userProfile: userProfile,
+    });
+  };
+
   const endCall = () => {
     setIsCallActive(false);
-    setCurrentTranscript("");
     setError(null);
     stopSpeechRecognition();
     stopSpeechSynthesis();
     cleanupAudioAnalysis();
+    hasSentInitialGreeting.current = false;
 
     triggerN8nWebhook("call_ended", {
       action: "call_end",
@@ -474,8 +568,6 @@ export default function VoiceMoodDashboard() {
       recognition.interimResults = true;
       recognition.lang = "en-US";
       recognition.maxAlternatives = 1;
-      (recognition as any).continuous = true;
-      (recognition as any).interimResults = true;
 
       return recognition;
     }
@@ -499,34 +591,23 @@ export default function VoiceMoodDashboard() {
     };
 
     recognition.onresult = async (event: any) => {
-      let interimTranscript = "";
       let finalTranscript = "";
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
         if (event.results[i].isFinal) {
           finalTranscript += transcript;
-        } else {
-          interimTranscript += transcript;
         }
       }
 
-      if (interimTranscript) {
-        setCurrentTranscript((prev) => {
-          const base = prev.split("|")[0].trim();
-          return base + (base ? " " : "") + interimTranscript + " |";
-        });
-      }
-
       if (finalTranscript) {
-        setCurrentTranscript((prev) => {
-          const base = prev.split("|")[0].trim();
-          return base + (base ? " " : "") + finalTranscript;
-        });
+        const fullTranscript = finalTranscript.trim();
 
-        setIsProcessing(true);
-        await processUserMessage(finalTranscript.trim());
-        setIsProcessing(false);
+        // Only process if we have substantial content
+        if (fullTranscript.length > 2 && !isProcessing) {
+          setIsProcessing(true);
+          await processUserMessage(fullTranscript);
+        }
       }
     };
 
@@ -535,9 +616,7 @@ export default function VoiceMoodDashboard() {
 
       switch (event.error) {
         case "no-speech":
-          setError(
-            "No speech detected. Please speak louder or check your microphone."
-          );
+          // Don't show error for no speech, just restart
           break;
         case "audio-capture":
           setError(
@@ -554,7 +633,7 @@ export default function VoiceMoodDashboard() {
           setError("Network error occurred. Please check your connection.");
           break;
         default:
-          setError(`Speech recognition error: ${event.error}`);
+          console.error(`Speech recognition error: ${event.error}`);
       }
 
       setIsListening(false);
@@ -579,7 +658,6 @@ export default function VoiceMoodDashboard() {
       recognition.start();
     } catch (error) {
       console.error("Error starting speech recognition:", error);
-      setError("Failed to start speech recognition. Please try again.");
     }
   };
 
@@ -603,47 +681,118 @@ export default function VoiceMoodDashboard() {
   };
 
   const processUserMessage = async (message: string) => {
-    if (!message.trim() || message.length < 2) return;
+    if (!message.trim() || message.length < 2) {
+      setIsProcessing(false);
+      return;
+    }
+
+    // Update conversation context
+    conversationContext.current.push(`User: ${message}`);
+
+    // Keep only last 12 messages for context to avoid token limits
+    if (conversationContext.current.length > 12) {
+      conversationContext.current = conversationContext.current.slice(-12);
+    }
+
+    // Send user message to webhook
+    await triggerN8nWebhook("user_message", {
+      action: "user_input",
+      message: message,
+      timestamp: new Date().toISOString(),
+      mood: detectMood(message),
+    });
 
     const getFallbackResponse = (userMessage: string): string => {
       const lowerMessage = userMessage.toLowerCase();
+
+      // Check conversation context for better responses
+      const recentContext = conversationContext.current
+        .slice(-4)
+        .join(" ")
+        .toLowerCase();
+
+      // Business-related queries
+      if (
+        lowerMessage.includes("business") ||
+        lowerMessage.includes("company") ||
+        lowerMessage.includes("work") ||
+        recentContext.includes("business")
+      ) {
+        return "I understand you're asking about business matters. I can help discuss strategy, challenges, or next steps. Our team will also follow up with you to provide personalized business support. What specific business area would you like to focus on?";
+      }
+
+      if (
+        lowerMessage.includes("contact") ||
+        lowerMessage.includes("email") ||
+        lowerMessage.includes("phone")
+      ) {
+        return "I've noted your contact preferences. Our team will reach out to you shortly to discuss further. We're here to help you succeed! Is there anything else I can assist you with in the meantime?";
+      }
+
+      if (
+        lowerMessage.includes("service") ||
+        lowerMessage.includes("product") ||
+        lowerMessage.includes("offer")
+      ) {
+        return "Thank you for your interest in our services! I'll make sure our team connects with you to discuss how we can best support your business goals. Could you tell me more about what you're looking for?";
+      }
 
       if (
         lowerMessage.includes("hello") ||
         lowerMessage.includes("hi") ||
         lowerMessage.includes("hey")
       ) {
-        return "Hello! It's great to hear from you. How has your day been going so far?";
+        return "Hello again! It's great to continue our conversation. I'm here to help with both personal support and business discussions. What would you like to talk about today?";
       }
 
       if (lowerMessage.includes("how are you")) {
-        return "I'm functioning well, thank you for asking! I'm here to chat with you. What would you like to talk about today?";
+        return "I'm functioning well, thank you for asking! I'm here to support you with both personal wellbeing and business growth. What would you like to focus on today?";
       }
 
       if (lowerMessage.includes("thank")) {
-        return "You're very welcome! I'm glad I could help. Is there anything else on your mind?";
+        return "You're very welcome! I'm glad I could help. I'll make sure our team follows up with any business inquiries you have. Is there anything else on your mind that you'd like to discuss?";
       }
 
       if (
         lowerMessage.includes("sad") ||
         lowerMessage.includes("upset") ||
-        lowerMessage.includes("unhappy")
+        lowerMessage.includes("unhappy") ||
+        lowerMessage.includes("stress")
       ) {
-        return "I'm sorry to hear you're feeling this way. It's completely normal to have difficult moments. Would you like to talk more about what's bothering you?";
+        return "I'm sorry to hear you're feeling this way. It's completely normal to have difficult moments, whether in business or personal life. Would you like to talk more about what's bothering you? I'm here to listen and support you.";
       }
 
       if (
         lowerMessage.includes("happy") ||
         lowerMessage.includes("excited") ||
-        lowerMessage.includes("good")
+        lowerMessage.includes("good") ||
+        lowerMessage.includes("great")
       ) {
-        return "That's wonderful to hear! I'm glad you're feeling positive. What's been making you feel this way?";
+        return "That's wonderful to hear! I'm glad you're feeling positive. Whether it's business success or personal growth, I'm here to support your journey. What's been making you feel this way? I'd love to hear more.";
       }
 
-      return "Thank you for sharing that with me. I'm here to listen and help however I can. What else is on your mind?";
+      // Context-aware responses
+      if (
+        recentContext.includes("business") ||
+        recentContext.includes("company")
+      ) {
+        return "Regarding your business inquiry, I understand this is important to you. Our team will provide detailed follow-up on this matter. In the meantime, is there anything else about your business needs you'd like to discuss?";
+      }
+
+      if (recentContext.includes("help") || recentContext.includes("support")) {
+        return "I want to make sure I'm providing the support you need. Could you tell me a bit more about what you're looking for? I'm here to help in any way I can.";
+      }
+
+      return "Thank you for sharing that with me. I'm here to listen and help however I can, whether it's personal support or business guidance. Our team will also follow up to ensure you get the comprehensive support you need. What would you like to explore next?";
     };
 
     try {
+      // Build conversation history for context (last 4 exchanges)
+      const recentConversations = conversations.slice(0, 4).reverse();
+      const conversationHistory = recentConversations
+        .map((conv) => `User: ${conv.userMessage}\nAI: ${conv.aiResponse}`)
+        .join("\n\n");
+
       const response = await fetch(
         "https://openrouter.ai/api/v1/chat/completions",
         {
@@ -655,19 +804,34 @@ export default function VoiceMoodDashboard() {
             "X-Title": "GPT Voice Mood",
           },
           body: JSON.stringify({
-            model: "openai/gpt-5-chat",
+            model: "openai/gpt-3.5-turbo",
             messages: [
               {
                 role: "system",
-                content:
-                  "You are a helpful and empathetic AI assistant. Analyze the user's mood from their message and respond appropriately. Keep responses conversational and under 100 words. Be engaging and supportive.",
+                content: `You are a helpful and empathetic AI assistant that supports both personal wellbeing and business growth. 
+              The user has provided this background: ${JSON.stringify(
+                userProfile?.onboardingAnswers
+              )}.
+              
+              CRITICAL: Maintain conversation context and remember previous exchanges. Be engaging, natural, and conversational.
+              Keep responses between 20-80 words. Speak naturally as if having a real conversation.
+              For business inquiries, mention that the team will follow up.
+              
+              Previous conversation context:
+              ${conversationHistory}
+              
+              Current user context:
+              ${conversationContext.current.slice(-6).join("\n")}
+              
+              Respond appropriately to personal and business queries while maintaining context and being genuinely helpful.`,
               },
               {
                 role: "user",
                 content: message,
               },
             ],
-            max_tokens: 150,
+            max_tokens: 120,
+            temperature: 0.8,
           }),
         }
       );
@@ -684,6 +848,7 @@ export default function VoiceMoodDashboard() {
 
       const aiResponse = data.choices[0].message.content;
       const mood = detectMood(message);
+      const sentiment = analyzeSentiment(message);
 
       const newEntry: ConversationEntry = {
         id: Date.now().toString(),
@@ -691,9 +856,13 @@ export default function VoiceMoodDashboard() {
         userMessage: message,
         aiResponse: aiResponse,
         mood: mood,
+        sentiment: sentiment,
       };
 
-      setConversations((prev) => [newEntry, ...prev.slice(0, 49)]);
+      setConversations((prev) => [newEntry, ...prev.slice(0, 49)]); // Keep last 50 conversations
+
+      // Update conversation context with AI response
+      conversationContext.current.push(`AI: ${aiResponse}`);
 
       await triggerN8nWebhook("conversation_entry", {
         action: "new_conversation",
@@ -707,6 +876,7 @@ export default function VoiceMoodDashboard() {
       console.error("Error calling OpenRouter API:", error);
       const fallbackResponse = getFallbackResponse(message);
       const mood = detectMood(message);
+      const sentiment = analyzeSentiment(message);
 
       const newEntry: ConversationEntry = {
         id: Date.now().toString(),
@@ -714,9 +884,13 @@ export default function VoiceMoodDashboard() {
         userMessage: message,
         aiResponse: fallbackResponse,
         mood: mood,
+        sentiment: sentiment,
       };
 
       setConversations((prev) => [newEntry, ...prev]);
+
+      // Update conversation context with fallback response
+      conversationContext.current.push(`AI: ${fallbackResponse}`);
 
       await triggerN8nWebhook("conversation_entry_fallback", {
         action: "fallback_conversation",
@@ -726,6 +900,8 @@ export default function VoiceMoodDashboard() {
       });
 
       speakText(fallbackResponse);
+    } finally {
+      setIsProcessing(false);
     }
   };
 
@@ -772,12 +948,50 @@ export default function VoiceMoodDashboard() {
     return "neutral";
   };
 
+  const analyzeSentiment = (text: string): number => {
+    const positiveWords = [
+      "happy",
+      "good",
+      "great",
+      "excited",
+      "wonderful",
+      "amazing",
+      "love",
+      "excellent",
+      "fantastic",
+    ];
+    const negativeWords = [
+      "sad",
+      "bad",
+      "angry",
+      "upset",
+      "frustrated",
+      "hate",
+      "terrible",
+      "awful",
+      "horrible",
+    ];
+
+    const lowerText = text.toLowerCase();
+    let score = 0;
+
+    positiveWords.forEach((word) => {
+      if (lowerText.includes(word)) score += 1;
+    });
+
+    negativeWords.forEach((word) => {
+      if (lowerText.includes(word)) score -= 1;
+    });
+
+    return Math.max(-1, Math.min(1, score / 5));
+  };
+
   const speakText = (text: string) => {
     if ("speechSynthesis" in window) {
       stopSpeechSynthesis();
 
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = settings.speed;
+      utterance.rate = 1.0; // Consistent speed
       utterance.pitch = 1;
       utterance.volume = 1;
 
@@ -785,25 +999,43 @@ export default function VoiceMoodDashboard() {
       utterance.onend = () => setIsSpeaking(false);
       utterance.onerror = () => setIsSpeaking(false);
 
+      // Get voices and select the best available
       const voices = window.speechSynthesis.getVoices();
       const preferredVoice = voices.find(
         (voice) =>
           voice.name.includes("Google") ||
           voice.name.includes("Natural") ||
-          voice.name.includes("Samantha")
+          voice.name.includes("Samantha") ||
+          voice.name.includes("Karen") ||
+          voice.name.includes("Microsoft")
       );
 
       if (preferredVoice) {
         utterance.voice = preferredVoice;
       }
 
-      window.speechSynthesis.speak(utterance);
+      // Ensure clean state before speaking
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+      }
+
+      // Small delay to ensure clean state
+      setTimeout(() => {
+        try {
+          window.speechSynthesis.speak(utterance);
+        } catch (error) {
+          console.error("Error speaking text:", error);
+          setIsSpeaking(false);
+        }
+      }, 50);
+
       synthesisRef.current = utterance;
     }
   };
 
   const clearHistory = () => {
     setConversations([]);
+    conversationContext.current = [];
     typeof window !== "undefined" &&
       localStorage.removeItem("voice-mood-conversations");
 
@@ -817,19 +1049,18 @@ export default function VoiceMoodDashboard() {
     if (!isMicPermissionGranted) return "Microphone access required";
     if (isListening) return "Listening... Speak now";
     if (isProcessing) return "Processing your message...";
+    if (isSpeaking) return "AI is speaking...";
     return "Ready to listen";
   };
 
   const todaySessions = conversations.filter(
     (c) => new Date(c.timestamp).toDateString() === new Date().toDateString()
   ).length;
-
   const weekSessions = conversations.filter((c) => {
     const weekAgo = new Date();
     weekAgo.setDate(weekAgo.getDate() - 7);
     return new Date(c.timestamp) > weekAgo;
   }).length;
-
   const positiveSessions = conversations.filter(
     (c) => c.mood === "positive"
   ).length;
@@ -848,9 +1079,11 @@ export default function VoiceMoodDashboard() {
         data={onboardingData}
         onInputChange={handleOnboardingInputChange}
         onCheckboxToggle={handleCheckboxToggle}
+        onRadioSelect={handleRadioSelect}
         onNext={nextQuestion}
         onPrev={prevQuestion}
         onComplete={completeOnboarding}
+        error={error}
       />
     );
   }
@@ -867,7 +1100,7 @@ export default function VoiceMoodDashboard() {
             GPT Voice Mood
           </h1>
           <p className="text-gray-600">
-            Your AI companion for mood tracking and conversation
+            Your AI companion for mood tracking and business support
           </p>
         </motion.header>
 
@@ -1019,8 +1252,11 @@ export default function VoiceMoodDashboard() {
                             <p>💡 Speak clearly into your microphone</p>
                             <p>💡 Ensure you're in a quiet environment</p>
                             <p>
-                              💡 Allow a moment after speaking for processing
+                              💡 Allow the AI to finish speaking before
+                              responding
                             </p>
+                            <p>💡 AI remembers your conversation context</p>
+                            <p>💡 Discuss both personal and business topics</p>
                           </div>
                         </div>
                       )}
@@ -1036,7 +1272,7 @@ export default function VoiceMoodDashboard() {
                     <div className="flex items-center justify-between mb-4">
                       <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
                         <BarChart3 size={20} />
-                        Progress Insights
+                        Conversation History
                       </h2>
                       {conversations.length > 0 && (
                         <motion.button
@@ -1121,14 +1357,16 @@ export default function VoiceMoodDashboard() {
                                 </span>
                               </div>
                               <div className="space-y-2">
-                                <div>
-                                  <strong className="text-blue-600">
-                                    You:
-                                  </strong>
-                                  <p className="text-gray-700 ml-2">
-                                    {conv.userMessage}
-                                  </p>
-                                </div>
+                                {conv.userMessage && (
+                                  <div>
+                                    <strong className="text-blue-600">
+                                      You:
+                                    </strong>
+                                    <p className="text-gray-700 ml-2">
+                                      {conv.userMessage}
+                                    </p>
+                                  </div>
+                                )}
                                 <div>
                                   <strong className="text-green-600">
                                     AI:
@@ -1163,6 +1401,18 @@ export default function VoiceMoodDashboard() {
                           <p className="text-sm text-gray-600">Name</p>
                           <p className="font-semibold">
                             {userProfile.name || "Not set"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Email</p>
+                          <p className="font-semibold">
+                            {userProfile.email || "Not set"}
+                          </p>
+                        </div>
+                        <div>
+                          <p className="text-sm text-gray-600">Phone</p>
+                          <p className="font-semibold">
+                            {userProfile.phone || "Not set"}
                           </p>
                         </div>
                         <div>
@@ -1207,6 +1457,13 @@ export default function VoiceMoodDashboard() {
                       <div className="flex justify-between">
                         <span className="text-gray-600">This Week:</span>
                         <span className="font-semibold">{weekSessions}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-600">Context Memory:</span>
+                        <span className="font-semibold">
+                          {Math.min(conversationContext.current.length, 12)}/12
+                          messages
+                        </span>
                       </div>
                     </div>
                   </motion.div>
@@ -1280,6 +1537,8 @@ export default function VoiceMoodDashboard() {
                       <p>• Ensure good microphone positioning</p>
                       <p>• Reduce background noise for better accuracy</p>
                       <p>• Allow the AI to finish speaking before responding</p>
+                      <p>• AI remembers context from previous conversations</p>
+                      <p>• Discuss both personal and business topics</p>
                       <p>• Use Chrome or Edge for best compatibility</p>
                     </div>
                   </motion.div>
@@ -1302,27 +1561,35 @@ export default function VoiceMoodDashboard() {
   );
 }
 
+// ... (Keep the OnboardingQuestionnaire and SettingsProfile components exactly as they were in the previous code)
+// The SettingsProfile component remains unchanged from your original code
+
 function OnboardingQuestionnaire({
   questions,
   currentQuestion,
   data,
   onInputChange,
   onCheckboxToggle,
+  onRadioSelect,
   onNext,
   onPrev,
   onComplete,
+  error,
 }: {
   questions: any[];
   currentQuestion: number;
   data: OnboardingData;
   onInputChange: (value: string | string[]) => void;
   onCheckboxToggle: (option: string) => void;
+  onRadioSelect: (option: string) => void;
   onNext: () => void;
   onPrev: () => void;
   onComplete: () => void;
+  error: string | null;
 }) {
   const currentQ = questions[currentQuestion];
   const progress = ((currentQuestion + 1) / questions.length) * 100;
+  const IconComponent = currentQ.icon;
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-600 via-blue-600 to-cyan-500 flex items-center justify-center p-4">
@@ -1365,16 +1632,33 @@ function OnboardingQuestionnaire({
             <div className="w-8"></div>
           </div>
 
-          <motion.h1
+          <motion.div
             key={currentQuestion}
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
-            className="text-3xl font-bold text-white mb-2"
+            className="flex items-center justify-center gap-3 mb-4"
           >
-            {currentQ.question}
-          </motion.h1>
+            {IconComponent && (
+              <div className="p-2 rounded-full bg-white/20">
+                <IconComponent size={24} className="text-white" />
+              </div>
+            )}
+            <h1 className="text-3xl font-bold text-white">
+              {currentQ.question}
+            </h1>
+          </motion.div>
           <p className="text-white/70">{currentQ.description}</p>
         </div>
+
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-4 bg-red-500/20 border border-red-400/30 rounded-xl p-4"
+          >
+            <p className="text-red-100 text-sm text-center">{error}</p>
+          </motion.div>
+        )}
 
         <motion.div
           key={currentQuestion}
@@ -1400,20 +1684,44 @@ function OnboardingQuestionnaire({
                 <label
                   key={option}
                   className={`flex items-center gap-4 p-4 rounded-xl cursor-pointer transition-all duration-200 ${
-                    data.checkInTimes.includes(option)
+                    (data.checkInTimes || []).includes(option)
                       ? "bg-white/20 border-white/40"
                       : "bg-white/10 border-white/20 hover:bg-white/15"
                   } border`}
                 >
                   <input
                     type="checkbox"
-                    checked={data.checkInTimes.includes(option)}
+                    checked={(data.checkInTimes || []).includes(option)}
                     onChange={() => onCheckboxToggle(option)}
                     className="w-5 h-5 text-blue-600 bg-white/20 border-white/30 rounded focus:ring-white/50"
                   />
                   <span className="text-white font-medium">
                     {option} Check-ins
                   </span>
+                </label>
+              ))}
+            </div>
+          )}
+
+          {currentQ.type === "radio" && (
+            <div className="space-y-3">
+              {currentQ.options.map((option: string) => (
+                <label
+                  key={option}
+                  className={`flex items-center gap-4 p-4 rounded-xl cursor-pointer transition-all duration-200 ${
+                    data.preferredContact === option
+                      ? "bg-white/20 border-white/40"
+                      : "bg-white/10 border-white/20 hover:bg-white/15"
+                  } border`}
+                >
+                  <input
+                    type="radio"
+                    name="preferredContact"
+                    checked={data.preferredContact === option}
+                    onChange={() => onRadioSelect(option)}
+                    className="w-5 h-5 text-blue-600 bg-white/20 border-white/30 rounded-full focus:ring-white/50"
+                  />
+                  <span className="text-white font-medium">{option}</span>
                 </label>
               ))}
             </div>
@@ -1492,11 +1800,14 @@ function SettingsProfile() {
       supportNeeded: "",
       checkInTimes: [],
       aiPreferences: "",
+      businessGoals: "",
+      preferredContact: "",
     },
     preferences: {
       checkIns: [],
       callReminders: true,
       moodTracking: true,
+      businessUpdates: true,
     },
   });
 
@@ -1511,7 +1822,7 @@ function SettingsProfile() {
           const answers = JSON.parse(onboardingData);
           setProfile((prev) => ({
             ...prev,
-            onboardingAnswers: answers,
+            onboardingAnswers: { ...prev.onboardingAnswers, ...answers },
           }));
         }
 
@@ -1543,11 +1854,19 @@ function SettingsProfile() {
   ];
 
   const onboardingQuestions = [
-    "What brings you here today?",
-    "What challenges are you facing?",
-    "What type of support do you need?",
-    "When would you like to receive check-ins?",
-    "Any preferences for your AI companion?",
+    { id: "whatBringsYou", question: "What brings you here today?" },
+    { id: "challenges", question: "What challenges are you facing?" },
+    { id: "supportNeeded", question: "What type of support do you need?" },
+    { id: "businessGoals", question: "What are your main business goals?" },
+    {
+      id: "checkInTimes",
+      question: "When would you like to receive check-ins?",
+    },
+    {
+      id: "preferredContact",
+      question: "How would you prefer us to contact you?",
+    },
+    { id: "aiPreferences", question: "Any preferences for your AI companion?" },
   ];
 
   const handleInputChange = (field: string, value: any) => {
@@ -1576,10 +1895,10 @@ function SettingsProfile() {
     }));
   };
 
-  const handleOnboardingAnswerChange = (question: string, value: string) => {
+  const handleOnboardingAnswerChange = (questionId: string, value: string) => {
     setProfile((prev) => ({
       ...prev,
-      onboardingAnswers: { ...prev.onboardingAnswers, [question]: value },
+      onboardingAnswers: { ...prev.onboardingAnswers, [questionId]: value },
     }));
   };
 
@@ -1615,6 +1934,10 @@ function SettingsProfile() {
     try {
       if (typeof window !== "undefined") {
         localStorage.setItem("userProfile", JSON.stringify(profile));
+        localStorage.setItem(
+          "OnBoarding",
+          JSON.stringify(profile.onboardingAnswers)
+        );
       }
 
       const webhookSuccess = await triggerN8nWebhook("profile_updated", {
@@ -1762,40 +2085,57 @@ function SettingsProfile() {
               </div>
 
               <div className="space-y-4">
-                {onboardingQuestions.map((question, index) => (
-                  <div key={index} className="bg-white/5 rounded-xl p-4">
+                {onboardingQuestions.map((q, index) => (
+                  <div key={q.id} className="bg-white/5 rounded-xl p-4">
                     <label className="block text-sm font-medium text-gray-300 mb-2">
-                      {question}
+                      {q.question}
                     </label>
-                    {question ===
-                    "When would you like to receive check-ins?" ? (
+                    {q.id === "checkInTimes" ? (
                       <div className="flex flex-wrap gap-2">
-                        {["Morning", "Evening", "Sunday"].map((time) => (
+                        {["Morning", "Afternoon", "Evening", "Weekends"].map(
+                          (time) => (
+                            <button
+                              key={time}
+                              onClick={() => handleCheckInToggle(time)}
+                              className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
+                                profile.preferences.checkIns.includes(time)
+                                  ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/30"
+                                  : "bg-white/10 text-gray-300 hover:bg-white/20"
+                              }`}
+                            >
+                              {time}
+                            </button>
+                          )
+                        )}
+                      </div>
+                    ) : q.id === "preferredContact" ? (
+                      <div className="flex flex-wrap gap-2">
+                        {["Email", "Phone", "Both"].map((option) => (
                           <button
-                            key={time}
-                            onClick={() => {
-                              const currentAnswers =
-                                profile.onboardingAnswers[question] || {};
-                              handleOnboardingAnswerChange(question, {
-                                ...currentAnswers,
-                                [time]: !currentAnswers[time],
-                              });
-                            }}
+                            key={option}
+                            onClick={() =>
+                              handleOnboardingAnswerChange(q.id, option)
+                            }
                             className={`px-4 py-2 rounded-full text-sm font-medium transition-all duration-200 ${
-                              profile.onboardingAnswers[question]?.[time]
+                              profile.onboardingAnswers.preferredContact ===
+                              option
                                 ? "bg-cyan-500 text-white shadow-lg shadow-cyan-500/30"
                                 : "bg-white/10 text-gray-300 hover:bg-white/20"
                             }`}
                           >
-                            {time}
+                            {option}
                           </button>
                         ))}
                       </div>
                     ) : (
                       <textarea
-                        value={profile.onboardingAnswers[question] || ""}
+                        value={
+                          (profile.onboardingAnswers[
+                            q.id as keyof typeof profile.onboardingAnswers
+                          ] as string) || ""
+                        }
                         onChange={(e) =>
-                          handleOnboardingAnswerChange(question, e.target.value)
+                          handleOnboardingAnswerChange(q.id, e.target.value)
                         }
                         rows={2}
                         className="w-full p-3 rounded-xl bg-white/10 border border-white/20 text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-cyan-500 transition-all duration-200"
@@ -1828,20 +2168,24 @@ function SettingsProfile() {
                     Check-in Times
                   </h3>
                   <div className="space-y-2">
-                    {["Morning", "Evening", "Sunday"].map((time) => (
-                      <label
-                        key={time}
-                        className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 cursor-pointer"
-                      >
-                        <input
-                          type="checkbox"
-                          checked={profile.preferences.checkIns.includes(time)}
-                          onChange={() => handleCheckInToggle(time)}
-                          className="w-4 h-4 text-cyan-500 bg-white/10 border-white/20 rounded focus:ring-cyan-500"
-                        />
-                        <span className="flex-1">{time} Check-ins</span>
-                      </label>
-                    ))}
+                    {["Morning", "Afternoon", "Evening", "Weekends"].map(
+                      (time) => (
+                        <label
+                          key={time}
+                          className="flex items-center gap-3 p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 cursor-pointer"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={profile.preferences.checkIns.includes(
+                              time
+                            )}
+                            onChange={() => handleCheckInToggle(time)}
+                            className="w-4 h-4 text-cyan-500 bg-white/10 border-white/20 rounded focus:ring-cyan-500"
+                          />
+                          <span className="flex-1">{time} Check-ins</span>
+                        </label>
+                      )
+                    )}
                   </div>
                 </div>
 
@@ -1874,6 +2218,24 @@ function SettingsProfile() {
                       checked={profile.preferences.moodTracking}
                       onChange={(e) =>
                         handlePreferenceChange("moodTracking", e.target.checked)
+                      }
+                      className="w-4 h-4 text-cyan-500 bg-white/10 border-white/20 rounded focus:ring-cyan-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between p-3 rounded-xl bg-white/5 hover:bg-white/10 transition-all duration-200 cursor-pointer">
+                    <div className="flex items-center gap-3">
+                      <Users className="w-5 h-5 text-blue-400" />
+                      <span>Business Updates</span>
+                    </div>
+                    <input
+                      type="checkbox"
+                      checked={profile.preferences.businessUpdates}
+                      onChange={(e) =>
+                        handlePreferenceChange(
+                          "businessUpdates",
+                          e.target.checked
+                        )
                       }
                       className="w-4 h-4 text-cyan-500 bg-white/10 border-white/20 rounded focus:ring-cyan-500"
                     />
