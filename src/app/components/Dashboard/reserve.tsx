@@ -27,9 +27,6 @@ import {
   Calendar,
   Brain,
   BookOpen,
-  Loader2,
-  Pause,
-  Play,
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 
@@ -94,14 +91,6 @@ interface OnboardingData {
   contactMethod: "email" | "phone" | "both";
 }
 
-// Enhanced Speech Recognition interface
-declare global {
-  interface Window {
-    webkitSpeechRecognition: any;
-    SpeechRecognition: any;
-  }
-}
-
 export default function VoiceMoodDashboard() {
   const router = useRouter();
   const [showOnboarding, setShowOnboarding] = useState(true);
@@ -132,29 +121,12 @@ export default function VoiceMoodDashboard() {
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [sessionProgress, setSessionProgress] = useState(0);
   const [conversationContext, setConversationContext] = useState<string[]>([]);
-  const [currentSession, setCurrentSession] = useState<ConversationEntry[]>([]);
-  const [sessionStartTime, setSessionStartTime] = useState<Date | null>(null);
-  const [sessionDuration, setSessionDuration] = useState(0);
-  const [isSessionPaused, setIsSessionPaused] = useState(false);
-  const [conversationBuffer, setConversationBuffer] = useState<
-    ConversationEntry[]
-  >([]);
-  const [lastDataSendTime, setLastDataSendTime] = useState<Date | null>(null);
-  const [isSendingData, setIsSendingData] = useState(false);
-  const [noSpeechDetected, setNoSpeechDetected] = useState(false);
-  const [speechActivity, setSpeechActivity] = useState<number>(0);
-  const [recognitionState, setRecognitionState] = useState<string>("idle");
-  const [browserSupport, setBrowserSupport] = useState<boolean>(true);
 
   const settings = {
     voice: "alloy",
     speed: 1.0,
     moodTracking: true,
     contextAwareness: true,
-    minSessionDuration: 10,
-    dataSendInterval: 1,
-    speechThreshold: 0.05,
-    speechTimeout: 30000,
   };
 
   const recognitionRef = useRef<any>(null);
@@ -162,37 +134,6 @@ export default function VoiceMoodDashboard() {
   const audioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const mediaStreamRef = useRef<MediaStream | null>(null);
-  const sessionTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const autoSaveTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const noSpeechTimerRef = useRef<NodeJS.Timeout | null>(null);
-  const beforeUnloadListenerRef = useRef<
-    ((event: BeforeUnloadEvent) => void) | null
-  >(null);
-  const speechActivityTimerRef = useRef<NodeJS.Timeout | null>(null);
-
-  // Check browser support on component mount
-  useEffect(() => {
-    const checkBrowserSupport = () => {
-      const hasSpeechRecognition =
-        "webkitSpeechRecognition" in window || "SpeechRecognition" in window;
-      const hasGetUserMedia = !!(
-        navigator.mediaDevices && navigator.mediaDevices.getUserMedia
-      );
-
-      setBrowserSupport(hasSpeechRecognition && hasGetUserMedia);
-
-      if (!hasSpeechRecognition) {
-        setError(
-          "Speech recognition not supported in this browser. Please use Chrome, Edge, or Safari."
-        );
-      }
-      if (!hasGetUserMedia) {
-        setError("Microphone access not available in this browser.");
-      }
-    };
-
-    checkBrowserSupport();
-  }, []);
 
   useEffect(() => {
     const checkOnboardingStatus = () => {
@@ -251,282 +192,12 @@ export default function VoiceMoodDashboard() {
   }, [conversations]);
 
   useEffect(() => {
-    if (isCallActive && sessionStartTime && !isSessionPaused) {
-      sessionTimerRef.current = setInterval(() => {
-        setSessionDuration((prev) => prev + 1);
-      }, 60000);
-    } else {
-      if (sessionTimerRef.current) {
-        clearInterval(sessionTimerRef.current);
-      }
-    }
-
-    return () => {
-      if (sessionTimerRef.current) {
-        clearInterval(sessionTimerRef.current);
-      }
-    };
-  }, [isCallActive, sessionStartTime, isSessionPaused]);
-
-  useEffect(() => {
-    if (isCallActive && !isSessionPaused) {
-      autoSaveTimerRef.current = setInterval(async () => {
-        if (conversationBuffer.length > 0 || currentSession.length > 0) {
-          await sendConversationDataToN8N("auto_save");
-        }
-      }, 60000);
-    } else {
-      if (autoSaveTimerRef.current) {
-        clearInterval(autoSaveTimerRef.current);
-      }
-    }
-
-    return () => {
-      if (autoSaveTimerRef.current) {
-        clearInterval(autoSaveTimerRef.current);
-      }
-    };
-  }, [
-    isCallActive,
-    isSessionPaused,
-    conversationBuffer.length,
-    currentSession.length,
-  ]);
-
-  useEffect(() => {
-    if (
-      !isCallActive &&
-      (conversationBuffer.length > 0 || currentSession.length > 0)
-    ) {
-      const finalSave = async () => {
-        await sendConversationDataToN8N("session_ended", true);
-      };
-      finalSave();
-    }
-  }, [isCallActive]);
-
-  useEffect(() => {
-    if (isCallActive && !isSessionPaused && analyserRef.current) {
-      const checkSpeechActivity = () => {
-        if (analyserRef.current && audioLevel > settings.speechThreshold) {
-          setSpeechActivity((prev) => Math.min(prev + 20, 100));
-          setNoSpeechDetected(false);
-
-          if (noSpeechTimerRef.current) {
-            clearTimeout(noSpeechTimerRef.current);
-          }
-          noSpeechTimerRef.current = setTimeout(() => {
-            if (audioLevel < settings.speechThreshold) {
-              setNoSpeechDetected(true);
-            }
-          }, settings.speechTimeout);
-        } else {
-          setSpeechActivity((prev) => Math.max(prev - 2, 0));
-        }
-      };
-
-      speechActivityTimerRef.current = setInterval(checkSpeechActivity, 500);
-    } else {
-      if (speechActivityTimerRef.current) {
-        clearInterval(speechActivityTimerRef.current);
-      }
-      setSpeechActivity(0);
-    }
-
-    return () => {
-      if (speechActivityTimerRef.current) {
-        clearInterval(speechActivityTimerRef.current);
-      }
-    };
-  }, [isCallActive, isSessionPaused, audioLevel]);
-
-  useEffect(() => {
-    const handleBeforeUnload = async (event: BeforeUnloadEvent) => {
-      if (
-        isCallActive &&
-        (conversationBuffer.length > 0 || currentSession.length > 0)
-      ) {
-        event.preventDefault();
-        event.returnValue = "";
-
-        const sessionData = {
-          eventType: "page_closed",
-          trigger: "page_closed",
-          timestamp: new Date().toISOString(),
-          sessionInfo: {
-            startTime: sessionStartTime?.toISOString(),
-            duration: sessionDuration,
-            progress: sessionProgress,
-            conversationCount:
-              conversationBuffer.length + currentSession.length,
-            isFinal: true,
-          },
-          conversationData: {
-            currentBuffer: [...conversationBuffer, ...currentSession],
-            totalConversations: conversations.length,
-            context: conversationContext,
-          },
-        };
-
-        navigator.sendBeacon(
-          process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL ||
-            `${window.location.origin}/api/webhook`,
-          JSON.stringify(sessionData)
-        );
-
-        await sendConversationDataToN8N("page_closed", true);
-      }
-    };
-
-    if (isCallActive) {
-      beforeUnloadListenerRef.current = handleBeforeUnload;
-      window.addEventListener("beforeunload", beforeUnloadListenerRef.current);
-    }
-
-    return () => {
-      if (beforeUnloadListenerRef.current) {
-        window.removeEventListener(
-          "beforeunload",
-          beforeUnloadListenerRef.current
-        );
-      }
-    };
-  }, [isCallActive, conversationBuffer.length, currentSession.length]);
-
-  useEffect(() => {
     return () => {
       stopSpeechRecognition();
       stopSpeechSynthesis();
       cleanupAudioAnalysis();
     };
   }, []);
-
-  const sendConversationDataToN8N = async (
-    trigger: string,
-    finalSession: boolean = false
-  ) => {
-    if (
-      conversationBuffer.length === 0 &&
-      currentSession.length === 0 &&
-      !finalSession
-    )
-      return;
-
-    setIsSendingData(true);
-
-    try {
-      const webhookUrl = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL;
-      const defaultWebhookUrl =
-        typeof window !== "undefined"
-          ? `${window.location.origin}/api/webhook`
-          : "https://voice-agent-phi-virid.vercel.app/api/webhook";
-
-      const finalWebhookUrl = webhookUrl || defaultWebhookUrl;
-
-      const allConversations = [...conversationBuffer, ...currentSession];
-
-      const sessionData = {
-        eventType: finalSession ? "session_completed" : "session_update",
-        trigger,
-        timestamp: new Date().toISOString(),
-        sessionInfo: {
-          startTime: sessionStartTime?.toISOString(),
-          duration: sessionDuration,
-          progress: sessionProgress,
-          conversationCount: allConversations.length,
-          isFinal: finalSession,
-          noSpeechDetected: noSpeechDetected,
-          speechActivity: speechActivity,
-        },
-        userProfile: userProfile || {
-          id: "user_" + Date.now(),
-          name: "",
-          email: onboardingData.contactEmail,
-          phone: onboardingData.contactPhone,
-          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-          freeTime: onboardingData.freeTimeSlots,
-          contactPreference: onboardingData.contactMethod,
-        },
-        conversationData: {
-          currentBuffer: allConversations,
-          totalConversations: conversations.length + allConversations.length,
-          context: conversationContext,
-          moodSummary: calculateMoodSummary(allConversations),
-          currentTranscript: currentTranscript,
-        },
-        technicalInfo: {
-          sessionId: `session_${sessionStartTime?.getTime()}`,
-          bufferSize: allConversations.length,
-          lastSendTime: lastDataSendTime?.toISOString(),
-          appVersion: "2.3.0",
-          speechActivity: speechActivity,
-          recognitionState: recognitionState,
-        },
-      };
-
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000);
-
-      const response = await fetch(finalWebhookUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(sessionData),
-        signal: controller.signal,
-      });
-
-      clearTimeout(timeoutId);
-
-      if (!response.ok) {
-        throw new Error(`HTTP ${response.status}: ${await response.text()}`);
-      }
-
-      const result = await response.json();
-
-      if (finalSession) {
-        setConversations((prev) => [...allConversations, ...prev.slice(0, 49)]);
-        setCurrentSession([]);
-        setConversationBuffer([]);
-        setSessionProgress(100);
-      } else {
-        setConversationBuffer([]);
-      }
-
-      setLastDataSendTime(new Date());
-
-      return true;
-    } catch (error) {
-      console.error("Failed to send data to N8N:", error);
-
-      if (finalSession) {
-        setTimeout(() => {
-          sendConversationDataToN8N(trigger, finalSession);
-        }, 2000);
-      }
-
-      return false;
-    } finally {
-      setIsSendingData(false);
-    }
-  };
-
-  const calculateMoodSummary = (conversations: ConversationEntry[]) => {
-    const moodCounts = { positive: 0, negative: 0, neutral: 0 };
-    conversations.forEach((conv) => {
-      if (conv.mood) moodCounts[conv.mood as keyof typeof moodCounts]++;
-    });
-
-    const dominantMood = Object.entries(moodCounts).reduce((a, b) =>
-      a[1] > b[1] ? a : b
-    )[0];
-
-    return {
-      dominantMood,
-      counts: moodCounts,
-      total: conversations.length,
-    };
-  };
 
   const onboardingQuestions = [
     {
@@ -552,6 +223,14 @@ export default function VoiceMoodDashboard() {
       type: "textarea",
       placeholder: "I need help with...",
       icon: <Heart className="w-5 h-5" />,
+    },
+    {
+      id: "userName",
+      question: "What's your Name?",
+      description: "We'll use this to contact you for follow-ups",
+      type: "userNameß",
+      placeholder: "Hasan Al Banna",
+      icon: <Phone className="w-5 h-5" />,
     },
     {
       id: "contactEmail",
@@ -648,6 +327,90 @@ export default function VoiceMoodDashboard() {
     }
   };
 
+  const triggerN8nWebhook = async (eventType: string, data: any) => {
+    try {
+      const webhookUrl = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL;
+
+      // If no webhook URL is set, use the local API route as default
+      const defaultWebhookUrl =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/api/webhook`
+          : "https://voice-agent-phi-virid.vercel.app/api/webhook";
+
+      const finalWebhookUrl = webhookUrl || defaultWebhookUrl;
+
+      // Validate URL
+      if (
+        !finalWebhookUrl ||
+        finalWebhookUrl.includes("undefined") ||
+        finalWebhookUrl.includes("your_single_n8n_webhook_url_here")
+      ) {
+        console.warn("⚠️ Webhook URL not properly configured, using default");
+        return true; // Don't break the app
+      }
+
+      const completeData = {
+        eventType,
+        timestamp: new Date().toISOString(),
+        userProfile: userProfile || {
+          id: "user_" + Date.now(),
+          name: "",
+          email: onboardingData.contactEmail,
+          phone: onboardingData.contactPhone,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          freeTime: onboardingData.freeTimeSlots,
+          contactPreference: onboardingData.contactMethod,
+          onboardingAnswers: onboardingData,
+          preferences: {
+            checkIns: onboardingData.checkInTimes || [],
+            callReminders: true,
+            moodTracking: true,
+            sessionProgress: true,
+            contextAwareness: true,
+          },
+          conversationContext: {
+            recentTopics: conversationContext,
+            emotionalState: "neutral",
+            sessionProgress: sessionProgress,
+            lastSessionDate: new Date(),
+          },
+        },
+        onboardingData: onboardingData,
+        conversations: conversations.slice(-5), // Send last 5 conversations for context
+        currentSessionProgress: sessionProgress,
+        conversationContext: conversationContext,
+        appVersion: "2.0.0",
+        source: "voice-mood-dashboard",
+        ...data,
+      };
+
+      console.log(`📤 Sending ${eventType} to:`, finalWebhookUrl);
+      console.log("📊 Webhook payload:", completeData);
+
+      const response = await fetch(finalWebhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(completeData),
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`HTTP ${response.status}: ${errorText}`);
+      }
+
+      const result = await response.json();
+      console.log("✅ Webhook successful:", result);
+
+      return true;
+    } catch (error) {
+      console.error("❌ Webhook failed:", error);
+      // Don't break the user experience if webhook fails
+      return false;
+    }
+  };
+
   const completeOnboarding = async () => {
     try {
       if (typeof window !== "undefined") {
@@ -686,7 +449,13 @@ export default function VoiceMoodDashboard() {
         setUserProfile(updatedProfile);
       }
 
-      await sendConversationDataToN8N("onboarding_completed");
+      await triggerN8nWebhook("onboarding_completed", {
+        action: "onboarding_finished",
+        userProfile: userProfile,
+        onboardingQuestions: onboardingQuestions,
+        userResponses: onboardingData,
+      });
+
       setShowOnboarding(false);
     } catch (error) {
       console.error("Error completing onboarding:", error);
@@ -703,25 +472,21 @@ export default function VoiceMoodDashboard() {
         },
       });
       stream.getTracks().forEach((track) => track.stop());
-      setIsMicPermissionGranted(true);
       return true;
     } catch (error) {
       console.error("Microphone permission denied:", error);
-      setIsMicPermissionGranted(false);
       return false;
     }
   };
 
   const setupAudioAnalysis = async (stream: MediaStream) => {
     try {
-      audioContextRef.current = new (window.AudioContext ||
-        (window as any).webkitAudioContext)();
+      audioContextRef.current = new AudioContext();
       analyserRef.current = audioContextRef.current.createAnalyser();
       const source = audioContextRef.current.createMediaStreamSource(stream);
       source.connect(analyserRef.current);
 
       analyserRef.current.fftSize = 256;
-      analyserRef.current.smoothingTimeConstant = 0.3;
       const bufferLength = analyserRef.current.frequencyBinCount;
       const dataArray = new Uint8Array(bufferLength);
 
@@ -734,9 +499,8 @@ export default function VoiceMoodDashboard() {
           sum += dataArray[i];
         }
         const average = sum / bufferLength;
-        const normalizedLevel = Math.min(average / 128, 1);
+        setAudioLevel(Math.min(average / 128, 1));
 
-        setAudioLevel(normalizedLevel);
         requestAnimationFrame(analyzeAudio);
       };
 
@@ -759,79 +523,107 @@ export default function VoiceMoodDashboard() {
     setAudioLevel(0);
   };
 
-  // FIXED: Proper speech recognition initialization
-  const initializeSpeechRecognition = () => {
-    if (!browserSupport) {
-      console.error("Browser doesn't support speech recognition");
-      return null;
-    }
+  const startCall = async () => {
+    setError(null);
+    setCurrentTranscript("");
+    setSessionProgress(0);
 
     try {
-      // Use the correct API
-      const SpeechRecognition =
-        window.SpeechRecognition || window.webkitSpeechRecognition;
-
-      if (!SpeechRecognition) {
-        console.error("SpeechRecognition API not found");
-        return null;
+      const hasPermission = await checkMicrophonePermission();
+      if (!hasPermission) {
+        setError(
+          "Microphone access is required. Please allow microphone permissions and try again."
+        );
+        return;
       }
 
-      console.log("Initializing speech recognition...");
+      setIsMicPermissionGranted(true);
+      setIsCallActive(true);
+
+      await triggerN8nWebhook("call_started", {
+        action: "call_start",
+        userProfile: userProfile,
+        currentConversations: conversations.length,
+        sessionStartTime: new Date().toISOString(),
+      });
+
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+      });
+      mediaStreamRef.current = stream;
+      await setupAudioAnalysis(stream);
+      await startSpeechRecognition();
+    } catch (error) {
+      console.error("Failed to start call:", error);
+      setError(
+        "Failed to access microphone. Please check your permissions and try again."
+      );
+      setIsCallActive(false);
+    }
+  };
+
+  const endCall = () => {
+    setIsCallActive(false);
+    setCurrentTranscript("");
+    setError(null);
+    setSessionProgress(100);
+    stopSpeechRecognition();
+    stopSpeechSynthesis();
+    cleanupAudioAnalysis();
+
+    triggerN8nWebhook("call_ended", {
+      action: "call_end",
+      conversationCount: conversations.length,
+      lastSession: conversations[0] || null,
+      userProfile: userProfile,
+      sessionProgress: sessionProgress,
+      conversationContext: conversationContext,
+      sessionEndTime: new Date().toISOString(),
+    });
+  };
+
+  const initializeSpeechRecognition = () => {
+    if ("webkitSpeechRecognition" in window || "SpeechRecognition" in window) {
+      const SpeechRecognition =
+        (window as any).SpeechRecognition ||
+        (window as any).webkitSpeechRecognition;
       const recognition = new SpeechRecognition();
 
-      // CORRECT configuration
       recognition.continuous = true;
       recognition.interimResults = true;
       recognition.lang = "en-US";
       recognition.maxAlternatives = 1;
+      (recognition as any).continuous = true;
+      (recognition as any).interimResults = true;
 
       return recognition;
-    } catch (error) {
-      console.error("Error creating speech recognition:", error);
-      return null;
     }
+    return null;
   };
 
-  // FIXED: Proper speech recognition start
   const startSpeechRecognition = async () => {
-    console.log("Starting speech recognition...");
-
-    if (!browserSupport) {
-      setError("Speech recognition not supported in this browser");
-      return;
-    }
-
-    // Stop any existing recognition
-    if (recognitionRef.current) {
-      try {
-        recognitionRef.current.stop();
-      } catch (e) {
-        console.log("Error stopping previous recognition:", e);
-      }
-    }
-
     const recognition = initializeSpeechRecognition();
     if (!recognition) {
-      setError("Failed to initialize speech recognition");
+      setError(
+        "Speech recognition is not supported in your browser. Please use Chrome, Edge, or Safari."
+      );
       return;
     }
 
     recognitionRef.current = recognition;
-    setRecognitionState("starting");
 
-    // FIXED: Proper event handlers
     recognition.onstart = () => {
-      console.log("Speech recognition started");
       setIsListening(true);
       setError(null);
-      setNoSpeechDetected(false);
-      setRecognitionState("listening");
     };
 
-    recognition.onresult = (event: any) => {
-      console.log("Speech recognition result received");
-      let finalTranscript = "";
+    recognition.onresult = async (event: any) => {
       let interimTranscript = "";
+      let finalTranscript = "";
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         const transcript = event.results[i][0].transcript;
@@ -842,38 +634,37 @@ export default function VoiceMoodDashboard() {
         }
       }
 
-      // Update UI with interim results
       if (interimTranscript) {
-        setCurrentTranscript(interimTranscript);
-        setSpeechActivity(80);
+        setCurrentTranscript((prev) => {
+          const base = prev.split("|")[0].trim();
+          return base + (base ? " " : "") + interimTranscript + " |";
+        });
       }
 
-      // Process final results
       if (finalTranscript) {
-        console.log("Final transcript:", finalTranscript);
-        setCurrentTranscript(finalTranscript);
-        setSpeechActivity(100);
-        setNoSpeechDetected(false);
+        setCurrentTranscript((prev) => {
+          const base = prev.split("|")[0].trim();
+          return base + (base ? " " : "") + finalTranscript;
+        });
 
-        // Process the message
         setIsProcessing(true);
-        processUserMessage(finalTranscript.trim())
-          .catch((error) => console.error("Error processing message:", error))
-          .finally(() => setIsProcessing(false));
+        await processUserMessage(finalTranscript.trim());
+        setIsProcessing(false);
       }
     };
 
-    recognition.onerror = (event: any) => {
+    recognition.onerror = (event: SpeechRecognitionErrorEvent) => {
       console.error("Speech recognition error:", event.error);
-      setRecognitionState(`error: ${event.error}`);
 
       switch (event.error) {
         case "no-speech":
-          setNoSpeechDetected(true);
+          setError(
+            "No speech detected. Please speak louder or check your microphone."
+          );
           break;
         case "audio-capture":
           setError(
-            "No microphone found. Please check your microphone connection."
+            "No microphone found. Please ensure a microphone is connected."
           );
           break;
         case "not-allowed":
@@ -881,6 +672,9 @@ export default function VoiceMoodDashboard() {
             "Microphone permission denied. Please allow microphone access."
           );
           setIsMicPermissionGranted(false);
+          break;
+        case "network":
+          setError("Network error occurred. Please check your connection.");
           break;
         default:
           setError(`Speech recognition error: ${event.error}`);
@@ -890,35 +684,25 @@ export default function VoiceMoodDashboard() {
     };
 
     recognition.onend = () => {
-      console.log("Speech recognition ended");
       setIsListening(false);
-      setRecognitionState("ended");
-
-      // Auto-restart if call is still active
-      if (isCallActive && !isSessionPaused) {
-        console.log("Auto-restarting speech recognition...");
+      if (isCallActive && recognitionRef.current) {
         setTimeout(() => {
-          if (isCallActive && !isSessionPaused) {
-            startSpeechRecognition();
+          if (isCallActive && recognitionRef.current) {
+            try {
+              recognitionRef.current.start();
+            } catch (error) {
+              console.error("Error restarting recognition:", error);
+            }
           }
         }, 100);
       }
     };
 
-    // Start recognition
     try {
       recognition.start();
-      console.log("Speech recognition start called");
     } catch (error) {
       console.error("Error starting speech recognition:", error);
-      setError("Failed to start speech recognition");
-
-      // Retry after a short delay
-      setTimeout(() => {
-        if (isCallActive && !isSessionPaused) {
-          startSpeechRecognition();
-        }
-      }, 1000);
+      setError("Failed to start speech recognition. Please try again.");
     }
   };
 
@@ -932,7 +716,6 @@ export default function VoiceMoodDashboard() {
       recognitionRef.current = null;
     }
     setIsListening(false);
-    setRecognitionState("stopped");
   };
 
   const stopSpeechSynthesis = () => {
@@ -940,99 +723,6 @@ export default function VoiceMoodDashboard() {
       window.speechSynthesis.cancel();
       setIsSpeaking(false);
     }
-  };
-
-  const startCall = async () => {
-    console.log("Starting call...");
-
-    if (!browserSupport) {
-      setError(
-        "Your browser doesn't support speech recognition. Please use Chrome, Edge, or Safari."
-      );
-      return;
-    }
-
-    setError(null);
-    setCurrentTranscript("");
-    setSessionProgress(0);
-    setSessionDuration(0);
-    setSessionStartTime(new Date());
-    setCurrentSession([]);
-    setConversationBuffer([]);
-    setIsSessionPaused(false);
-    setNoSpeechDetected(false);
-    setSpeechActivity(0);
-    setRecognitionState("initializing");
-
-    try {
-      // Check microphone permission first
-      const hasPermission = await checkMicrophonePermission();
-      if (!hasPermission) {
-        setError(
-          "Microphone access is required. Please allow microphone permissions and try again."
-        );
-        return;
-      }
-
-      setIsMicPermissionGranted(true);
-
-      // Get microphone stream
-      console.log("Requesting microphone access...");
-      const stream = await navigator.mediaDevices.getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
-        },
-      });
-
-      mediaStreamRef.current = stream;
-      await setupAudioAnalysis(stream);
-
-      // Start the call
-      setIsCallActive(true);
-      await sendConversationDataToN8N("session_started");
-
-      // Start speech recognition
-      await startSpeechRecognition();
-    } catch (error) {
-      console.error("Failed to start call:", error);
-      setError(
-        `Failed to start call: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
-      );
-      setIsCallActive(false);
-      cleanupAudioAnalysis();
-    }
-  };
-
-  const endCall = async () => {
-    console.log("Ending call...");
-
-    const finalDuration = sessionDuration;
-    const finalConversations = [...conversationBuffer, ...currentSession];
-
-    setIsCallActive(false);
-    setCurrentTranscript("");
-    setError(null);
-    setSessionProgress(100);
-
-    stopSpeechRecognition();
-    stopSpeechSynthesis();
-    cleanupAudioAnalysis();
-
-    if (finalConversations.length > 0 || finalDuration >= 1) {
-      await sendConversationDataToN8N("session_ended", true);
-    }
-
-    setCurrentSession([]);
-    setSessionStartTime(null);
-    setSessionDuration(0);
-    setConversationBuffer([]);
-    setNoSpeechDetected(false);
-    setSpeechActivity(0);
-    setRecognitionState("ended");
   };
 
   const extractTopics = (text: string): string[] => {
@@ -1102,25 +792,98 @@ export default function VoiceMoodDashboard() {
   const processUserMessage = async (message: string) => {
     if (!message.trim() || message.length < 2) return;
 
-    console.log("Processing user message:", message);
-    setSessionProgress((prev) => Math.min(prev + 5, 95));
+    // Update session progress
+    setSessionProgress((prev) => Math.min(prev + 10, 100));
 
+    // Extract and update conversation context
     const newTopics = extractTopics(message);
     setConversationContext((prev) => {
       const updated = [...prev, ...newTopics];
-      return Array.from(new Set(updated)).slice(-10);
+      return Array.from(new Set(updated)).slice(-10); // Keep last 10 unique topics
     });
+
+    const getContextAwareResponse = (
+      userMessage: string,
+      context: string[]
+    ): string => {
+      const lowerMessage = userMessage.toLowerCase();
+      const hasPreviousContext = context.length > 0;
+
+      if (hasPreviousContext) {
+        const recentTopics = context.slice(-3).join(", ");
+
+        if (
+          lowerMessage.includes("remember") ||
+          lowerMessage.includes("before")
+        ) {
+          return `I remember we talked about ${recentTopics}. I'm here to continue supporting you with those topics. How are things going with that now?`;
+        }
+
+        if (
+          context.includes("stress") &&
+          (lowerMessage.includes("better") || lowerMessage.includes("improve"))
+        ) {
+          return "I'm glad to hear you're working on managing stress. Remember the techniques we discussed? How are they helping you?";
+        }
+
+        if (context.includes("work") && lowerMessage.includes("today")) {
+          return "Since we've talked about work before, I'd love to hear how your day went. Any specific challenges or successes?";
+        }
+      }
+
+      // Fallback responses
+      if (
+        lowerMessage.includes("hello") ||
+        lowerMessage.includes("hi") ||
+        lowerMessage.includes("hey")
+      ) {
+        return hasPreviousContext
+          ? "Welcome back! I remember our previous conversation. How have you been since we last spoke?"
+          : "Hello! It's great to meet you. I'm here to listen and support you. What would you like to talk about today?";
+      }
+
+      if (lowerMessage.includes("how are you")) {
+        return "I'm functioning well, thank you for asking! I'm here to chat with you. What's on your mind today?";
+      }
+
+      if (lowerMessage.includes("thank")) {
+        return "You're very welcome! I'm glad I could help. Remember, I'm always here to listen. Is there anything else you'd like to discuss?";
+      }
+
+      if (
+        lowerMessage.includes("sad") ||
+        lowerMessage.includes("upset") ||
+        lowerMessage.includes("unhappy")
+      ) {
+        return "I'm sorry to hear you're feeling this way. It takes courage to share these feelings. Would you like to talk more about what's bothering you?";
+      }
+
+      if (
+        lowerMessage.includes("happy") ||
+        lowerMessage.includes("excited") ||
+        lowerMessage.includes("good")
+      ) {
+        return "That's wonderful to hear! I'm glad you're feeling positive. What's been making you feel this way? I'd love to hear more!";
+      }
+
+      return hasPreviousContext
+        ? `Thank you for sharing that. Building on our previous conversation about ${context
+            .slice(-2)
+            .join(
+              " and "
+            )}, I'm here to support you further. What else would you like to discuss?`
+        : "Thank you for sharing that with me. I'm here to listen and help however I can. What else is on your mind?";
+    };
 
     try {
       const context = conversationContext;
-      const systemPrompt = `You are a compassionate, empathetic AI companion. Speak naturally and conversationally.
-      ${
+      const systemPrompt = `You are a helpful and empathetic AI assistant. ${
         context.length > 0
-          ? `Previous topics discussed: ${context.join(", ")}. `
+          ? `The user has previously discussed: ${context.join(
+              ", "
+            )}. Use this context to provide more personalized responses. `
           : ""
-      }
-      Current session duration: ${sessionDuration} minutes.
-      Respond in a warm, engaging manner to continue the conversation naturally.`;
+      }Analyze the user's mood from their message and respond appropriately. Keep responses conversational and under 100 words. Be engaging, supportive, and remember previous context when relevant.`;
 
       const response = await fetch(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -1144,10 +907,7 @@ export default function VoiceMoodDashboard() {
                 content: message,
               },
             ],
-            max_tokens: 200,
-            temperature: 0.8,
-            presence_penalty: 0.6,
-            frequency_penalty: 0.6,
+            max_tokens: 150,
           }),
         }
       );
@@ -1176,16 +936,16 @@ export default function VoiceMoodDashboard() {
         topics: topics,
       };
 
-      setCurrentSession((prev) => [newEntry, ...prev.slice(0, 49)]);
-      setConversationBuffer((prev) => [newEntry, ...prev.slice(0, 49)]);
+      setConversations((prev) => [newEntry, ...prev.slice(0, 49)]);
 
+      // Update user profile with new context
       if (userProfile) {
         const updatedProfile = {
           ...userProfile,
           conversationContext: {
             recentTopics: [...conversationContext, ...topics].slice(-10),
             emotionalState: mood,
-            sessionProgress: sessionProgress + 5,
+            sessionProgress: sessionProgress + 10,
             lastSessionDate: new Date(),
           },
         };
@@ -1193,14 +953,19 @@ export default function VoiceMoodDashboard() {
         localStorage.setItem("userProfile", JSON.stringify(updatedProfile));
       }
 
-      speakText(aiResponse);
+      await triggerN8nWebhook("conversation_entry", {
+        action: "new_conversation",
+        conversation: newEntry,
+        userProfile: userProfile,
+        totalConversations: conversations.length + 1,
+        contextUsed: context,
+        sessionProgress: sessionProgress + 10,
+      });
 
-      setTimeout(async () => {
-        await sendConversationDataToN8N("conversation_exchange");
-      }, 1000);
+      speakText(aiResponse);
     } catch (error) {
-      console.error("Error processing message:", error);
-      const fallbackResponse = getFallbackResponse(
+      console.error("Error calling OpenRouter API:", error);
+      const fallbackResponse = getContextAwareResponse(
         message,
         conversationContext
       );
@@ -1217,41 +982,18 @@ export default function VoiceMoodDashboard() {
         topics: topics,
       };
 
-      setCurrentSession((prev) => [newEntry, ...prev]);
-      setConversationBuffer((prev) => [newEntry, ...prev]);
+      setConversations((prev) => [newEntry, ...prev]);
+
+      await triggerN8nWebhook("conversation_entry_fallback", {
+        action: "fallback_conversation",
+        conversation: newEntry,
+        userProfile: userProfile,
+        error: "OpenRouter API failed, using fallback response",
+        contextUsed: conversationContext,
+      });
 
       speakText(fallbackResponse);
     }
-  };
-
-  const getFallbackResponse = (message: string, context: string[]): string => {
-    const lowerMessage = message.toLowerCase();
-    const hasContext = context.length > 0;
-
-    if (hasContext) {
-      const recentTopics = context.slice(-2).join(" and ");
-
-      if (lowerMessage.includes("how") && lowerMessage.includes("feel")) {
-        return `Based on our conversation about ${recentTopics}, I'm here to support you. How are you feeling about these topics now?`;
-      }
-
-      if (lowerMessage.includes("more") || lowerMessage.includes("tell me")) {
-        return `I'd love to hear more about your thoughts on ${recentTopics}. What else comes to mind when you think about this?`;
-      }
-    }
-
-    const engagingResponses = [
-      "That's really interesting. What makes you say that?",
-      "I appreciate you sharing that with me. Could you tell me more about what led you to that thought?",
-      "That's a thoughtful point. How long have you been considering this?",
-      "I understand. What do you think would help improve this situation?",
-      "Thank you for being open with me. What else has been on your mind lately?",
-      "That sounds meaningful. How does this connect with other things we've discussed?",
-    ];
-
-    return engagingResponses[
-      Math.floor(Math.random() * engagingResponses.length)
-    ];
   };
 
   const detectMood = (text: string): string => {
@@ -1331,16 +1073,6 @@ export default function VoiceMoodDashboard() {
     }
   };
 
-  const toggleSessionPause = () => {
-    setIsSessionPaused(!isSessionPaused);
-    if (!isSessionPaused) {
-      stopSpeechRecognition();
-      stopSpeechSynthesis();
-    } else {
-      startSpeechRecognition();
-    }
-  };
-
   const clearHistory = () => {
     setConversations([]);
     setConversationContext([]);
@@ -1362,169 +1094,18 @@ export default function VoiceMoodDashboard() {
       localStorage.setItem("userProfile", JSON.stringify(updatedProfile));
     }
 
-    sendConversationDataToN8N("history_cleared");
+    triggerN8nWebhook("history_cleared", {
+      action: "clear_history",
+      userProfile: userProfile,
+    });
   };
 
   const getMicStatusText = () => {
-    if (!isMicPermissionGranted) return "❌ Microphone access required";
-    if (!browserSupport) return "❌ Browser not supported";
-    if (isListening && speechActivity > 70) return "🎤 Speaking detected...";
-    if (isListening) return "👂 Listening... Speak now";
-    if (isProcessing) return "🔄 Processing your message...";
-    if (noSpeechDetected) return "🔇 Waiting for speech...";
-    if (isSpeaking) return "🗣️ AI is responding...";
-    if (recognitionState === "starting")
-      return "🔄 Starting speech recognition...";
-    return "✅ Ready to listen";
+    if (!isMicPermissionGranted) return "Microphone access required";
+    if (isListening) return "Listening... Speak now";
+    if (isProcessing) return "Processing your message...";
+    return "Ready to listen";
   };
-
-  const renderSessionControls = () => (
-    <div className="flex items-center justify-center gap-4 mb-4">
-      <motion.button
-        onClick={toggleSessionPause}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        className={`px-4 py-2 rounded-full font-semibold flex items-center gap-2 transition-all duration-200 ${
-          isSessionPaused
-            ? "bg-green-500 hover:bg-green-600 text-white"
-            : "bg-yellow-500 hover:bg-yellow-600 text-white"
-        }`}
-      >
-        {isSessionPaused ? <Play size={16} /> : <Pause size={16} />}
-        {isSessionPaused ? "Resume" : "Pause"}
-      </motion.button>
-
-      <div className="text-sm text-gray-600 bg-white/50 px-3 py-1 rounded-full flex items-center gap-2">
-        <div
-          className={`w-2 h-2 rounded-full ${
-            isSendingData ? "bg-yellow-400 animate-pulse" : "bg-green-400"
-          }`}
-        />
-        <Clock size={14} />
-        {sessionDuration}m • {conversationBuffer.length + currentSession.length}{" "}
-        conv
-        {isSendingData && " • Auto-saving..."}
-      </div>
-    </div>
-  );
-
-  const renderAudioVisualizer = () => (
-    <div className="flex items-center justify-center gap-4 mb-4">
-      <div
-        className={`p-3 rounded-full border-2 ${
-          isListening
-            ? "bg-green-100 text-green-600 animate-pulse border-green-300"
-            : noSpeechDetected
-            ? "bg-yellow-100 text-yellow-600 border-yellow-300"
-            : "bg-gray-100 text-gray-400 border-gray-300"
-        }`}
-      >
-        {isListening ? <Mic size={24} /> : <MicOff size={24} />}
-      </div>
-
-      <div className="flex-1 max-w-md">
-        <div className="flex items-center gap-1 mb-2">
-          {Array.from({ length: 10 }).map((_, i) => (
-            <div
-              key={i}
-              className={`flex-1 h-3 rounded-full transition-all duration-200 ${
-                audioLevel > i / 10
-                  ? speechActivity > 50
-                    ? "bg-green-500 animate-pulse"
-                    : "bg-blue-500"
-                  : "bg-gray-200"
-              }`}
-            />
-          ))}
-        </div>
-
-        <p className="text-sm text-gray-600 text-center font-handwritten">
-          {getMicStatusText()}
-          {speechActivity > 30 && ` (${Math.round(speechActivity)}% active)`}
-        </p>
-        {recognitionState && (
-          <p className="text-xs text-gray-500 text-center mt-1">
-            Status: {recognitionState}
-          </p>
-        )}
-      </div>
-
-      <div
-        className={`p-3 rounded-full border-2 ${
-          isSpeaking
-            ? "bg-blue-100 text-blue-600 animate-pulse border-blue-300"
-            : "bg-gray-100 text-gray-400 border-gray-300"
-        }`}
-      >
-        <Volume2 size={24} />
-      </div>
-    </div>
-  );
-
-  const renderActiveCallUI = () => (
-    <div className="space-y-6">
-      {renderSessionControls()}
-      {renderAudioVisualizer()}
-
-      {currentTranscript && (
-        <motion.div
-          initial={{ opacity: 0, y: 10 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="bg-blue-50 border-2 border-blue-200 rounded-xl p-4"
-        >
-          <p className="text-sm text-blue-800 font-handwritten">
-            <strong>You said:</strong> {currentTranscript}
-          </p>
-        </motion.div>
-      )}
-
-      {noSpeechDetected && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-yellow-50 border-2 border-yellow-200 rounded-xl p-4 text-center"
-        >
-          <AlertCircle className="w-5 h-5 text-yellow-600 inline mr-2" />
-          <span className="text-yellow-700 text-sm font-handwritten">
-            No speech detected. Please speak clearly into your microphone.
-          </span>
-        </motion.div>
-      )}
-
-      {error && (
-        <motion.div
-          initial={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="bg-red-50 border-2 border-red-200 rounded-xl p-4 text-center"
-        >
-          <AlertCircle className="w-5 h-5 text-red-600 inline mr-2" />
-          <span className="text-red-700 text-sm font-handwritten">{error}</span>
-        </motion.div>
-      )}
-
-      <motion.button
-        onClick={endCall}
-        whileHover={{ scale: 1.05 }}
-        whileTap={{ scale: 0.95 }}
-        className="bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 shadow-lg shadow-red-500/30 border-2 border-white/30 font-handwritten"
-      >
-        <PhoneOff size={24} />
-        End Session ({sessionDuration}m)
-      </motion.button>
-
-      <div className="text-xs text-gray-500 space-y-1 text-center">
-        <p>💡 Session active for {sessionDuration} minutes</p>
-        <p>💡 Data auto-saves every minute and on session end</p>
-        <p>
-          💡 {conversationBuffer.length + currentSession.length} conversations
-          recorded
-        </p>
-        <p>💡 Speech activity: {Math.round(speechActivity)}%</p>
-        <p>💡 Audio level: {Math.round(audioLevel * 100)}%</p>
-        <p>💡 Data automatically saved if you close the tab</p>
-      </div>
-    </div>
-  );
 
   const todaySessions = conversations.filter(
     (c) => new Date(c.timestamp).toDateString() === new Date().toDateString()
@@ -1574,26 +1155,15 @@ export default function VoiceMoodDashboard() {
             <h1 className="text-5xl font-bold text-gray-800 mb-2 font-handwritten bg-white/80 px-6 py-3 rounded-2xl shadow-lg border-2 border-blue-200">
               GPT Voice Mood
             </h1>
+            <div className="absolute -top-2 -right-2 w-6 h-6 bg-yellow-400 rounded-full animate-bounce"></div>
+            <div className="absolute -bottom-2 -left-2 w-4 h-4 bg-pink-400 rounded-full animate-pulse"></div>
           </div>
           <p className="text-gray-600 text-lg font-handwritten">
-            Your AI companion for extended conversations
+            Your AI companion for mood tracking and conversation
           </p>
         </motion.header>
 
-        {!browserSupport && (
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            className="mb-6 bg-red-50 border-2 border-red-200 rounded-xl p-4 text-center"
-          >
-            <AlertCircle className="w-5 h-5 text-red-600 inline mr-2" />
-            <span className="text-red-700 text-sm font-handwritten">
-              Your browser doesn't support all required features. Please use
-              Chrome, Edge, or Safari for the best experience.
-            </span>
-          </motion.div>
-        )}
-
+        {/* Session Progress Bar */}
         {isCallActive && (
           <motion.div
             initial={{ opacity: 0, scale: 0.8 }}
@@ -1601,28 +1171,9 @@ export default function VoiceMoodDashboard() {
             className="mb-6 bg-white/80 backdrop-blur-sm rounded-2xl p-4 shadow-lg border-2 border-green-200"
           >
             <div className="flex items-center justify-between mb-2">
-              <div className="flex items-center gap-3">
-                <span className="text-sm font-medium text-gray-700 font-handwritten">
-                  Session Progress
-                </span>
-                <span className="text-xs bg-blue-100 text-blue-700 px-2 py-1 rounded-full font-handwritten">
-                  {sessionDuration}m elapsed
-                </span>
-                {(conversationBuffer.length > 0 ||
-                  currentSession.length > 0) && (
-                  <span className="text-xs bg-green-100 text-green-700 px-2 py-1 rounded-full font-handwritten">
-                    {conversationBuffer.length + currentSession.length} recorded
-                  </span>
-                )}
-                {noSpeechDetected && (
-                  <span className="text-xs bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full font-handwritten">
-                    Waiting for speech
-                  </span>
-                )}
-                <span className="text-xs bg-purple-100 text-purple-700 px-2 py-1 rounded-full font-handwritten">
-                  Speech: {Math.round(speechActivity)}%
-                </span>
-              </div>
+              <span className="text-sm font-medium text-gray-700 font-handwritten">
+                Session Progress
+              </span>
               <span className="text-sm font-bold text-green-600">
                 {sessionProgress}%
               </span>
@@ -1634,6 +1185,11 @@ export default function VoiceMoodDashboard() {
                 animate={{ width: `${sessionProgress}%` }}
                 transition={{ duration: 0.5 }}
               />
+            </div>
+            <div className="flex justify-between text-xs text-gray-500 mt-1">
+              <span>Started</span>
+              <span>In Progress</span>
+              <span>Complete</span>
             </div>
           </motion.div>
         )}
@@ -1710,33 +1266,93 @@ export default function VoiceMoodDashboard() {
                     whileHover={{ scale: 1.02 }}
                     className="bg-white rounded-2xl shadow-lg p-6 border-2 border-blue-200 relative overflow-hidden"
                   >
+                    <div className="absolute top-0 right-0 w-20 h-20 bg-yellow-200 rounded-full -mr-10 -mt-10 opacity-60"></div>
+                    <div className="absolute bottom-0 left-0 w-16 h-16 bg-green-200 rounded-full -ml-8 -mb-8 opacity-60"></div>
+
                     <div className="text-center relative z-10">
                       {!isCallActive ? (
                         <div className="space-y-4">
                           <motion.button
                             onClick={startCall}
-                            disabled={!browserSupport}
-                            whileHover={{ scale: browserSupport ? 1.05 : 1 }}
-                            whileTap={{ scale: browserSupport ? 0.95 : 1 }}
-                            className={`bg-gradient-to-r from-green-500 to-emerald-600 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 shadow-lg border-2 border-white/30 font-handwritten ${
-                              browserSupport
-                                ? "hover:from-green-600 hover:to-emerald-700"
-                                : "opacity-50 cursor-not-allowed"
-                            }`}
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            className="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 shadow-lg shadow-green-500/30 border-2 border-white/30 font-handwritten"
                           >
                             <Phone size={24} />
-                            {browserSupport
-                              ? "Start Extended Session"
-                              : "Browser Not Supported"}
+                            Start Voice Session
                           </motion.button>
                           <p className="text-sm text-gray-500 font-handwritten">
-                            {browserSupport
-                              ? "Begin an AI conversation - data auto-saves on close or end"
-                              : "Please use Chrome, Edge, or Safari for voice features"}
+                            Click to start a conversation with AI voice
+                            assistant
                           </p>
                         </div>
                       ) : (
-                        renderActiveCallUI()
+                        <div className="space-y-6">
+                          <div className="flex items-center justify-center gap-4">
+                            <div
+                              className={`p-3 rounded-full border-2 ${
+                                isListening
+                                  ? "bg-green-100 text-green-600 animate-pulse border-green-300"
+                                  : "bg-gray-100 text-gray-400 border-gray-300"
+                              }`}
+                            >
+                              {isListening ? (
+                                <Mic size={24} />
+                              ) : (
+                                <MicOff size={24} />
+                              )}
+                            </div>
+                            <div className="flex-1 max-w-md">
+                              <div className="flex items-center gap-2 mb-2">
+                                <div className="flex-1 h-2 bg-gray-200 rounded-full overflow-hidden border">
+                                  <motion.div
+                                    className="h-full bg-gradient-to-r from-green-500 to-emerald-500"
+                                    style={{ width: `${audioLevel * 100}%` }}
+                                    animate={{ width: `${audioLevel * 100}%` }}
+                                    transition={{ duration: 0.1 }}
+                                  />
+                                </div>
+                                <span className="text-sm text-gray-600 font-handwritten">
+                                  {Math.round(audioLevel * 100)}%
+                                </span>
+                              </div>
+                              <p className="text-sm text-gray-600 text-center font-handwritten">
+                                {getMicStatusText()}
+                              </p>
+                            </div>
+                            <div
+                              className={`p-3 rounded-full border-2 ${
+                                isSpeaking
+                                  ? "bg-blue-100 text-blue-600 animate-pulse border-blue-300"
+                                  : "bg-gray-100 text-gray-400 border-gray-300"
+                              }`}
+                            >
+                              <Volume2 size={24} />
+                            </div>
+                          </div>
+
+                          <motion.button
+                            onClick={endCall}
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            className="bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white px-8 py-4 rounded-full font-semibold text-lg flex items-center justify-center mx-auto gap-3 transition-all duration-200 shadow-lg shadow-red-500/30 border-2 border-white/30 font-handwritten"
+                          >
+                            <PhoneOff size={24} />
+                            End Call
+                          </motion.button>
+
+                          <div className="text-xs text-gray-500 space-y-1 font-handwritten">
+                            <p>💡 Speak clearly into your microphone</p>
+                            <p>💡 Ensure you're in a quiet environment</p>
+                            <p>
+                              💡 I remember our previous conversations for
+                              context
+                            </p>
+                            <p>
+                              💡 Allow a moment after speaking for processing
+                            </p>
+                          </div>
+                        </div>
                       )}
                     </div>
                   </motion.div>
@@ -1747,6 +1363,7 @@ export default function VoiceMoodDashboard() {
                     transition={{ delay: 0.2 }}
                     className="bg-white rounded-2xl shadow-lg p-6 border-2 border-purple-200 relative overflow-hidden"
                   >
+                    <div className="absolute top-0 left-0 w-12 h-12 bg-pink-200 rounded-full -ml-6 -mt-6 opacity-50"></div>
                     <div className="flex items-center justify-between mb-4">
                       <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 font-handwritten">
                         <BarChart3 size={20} />
@@ -1915,11 +1532,20 @@ export default function VoiceMoodDashboard() {
                       transition={{ delay: 0.3 }}
                       className="bg-white rounded-2xl shadow-lg p-6 border-2 border-green-200 relative overflow-hidden"
                     >
+                      <div className="absolute top-0 right-0 w-16 h-16 bg-blue-200 rounded-full -mr-8 -mt-8 opacity-50"></div>
                       <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4 font-handwritten">
                         <User size={20} />
                         Your Profile
                       </h2>
                       <div className="space-y-3">
+                        <div>
+                          <p className="text-sm text-gray-600 font-handwritten">
+                            Name
+                          </p>
+                          <p className="font-semibold font-handwritten">
+                            {userProfile.name || "Not set"}
+                          </p>
+                        </div>
                         <div>
                           <p className="text-sm text-gray-600 font-handwritten">
                             Email
@@ -1964,6 +1590,7 @@ export default function VoiceMoodDashboard() {
                     transition={{ delay: 0.4 }}
                     className="bg-white rounded-2xl shadow-lg p-6 border-2 border-yellow-200 relative overflow-hidden"
                   >
+                    <div className="absolute bottom-0 right-0 w-12 h-12 bg-purple-200 rounded-full -mr-6 -mb-6 opacity-50"></div>
                     <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4 font-handwritten">
                       <History size={20} />
                       Quick Stats
@@ -2010,6 +1637,7 @@ export default function VoiceMoodDashboard() {
                     transition={{ delay: 0.5 }}
                     className="bg-white rounded-2xl shadow-lg p-6 border-2 border-blue-200 relative overflow-hidden"
                   >
+                    <div className="absolute top-0 left-0 w-10 h-10 bg-green-200 rounded-full -ml-5 -mt-5 opacity-50"></div>
                     <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4 font-handwritten">
                       <Volume2 size={20} />
                       Voice Settings
@@ -2074,19 +1702,20 @@ export default function VoiceMoodDashboard() {
                     transition={{ delay: 0.6 }}
                     className="bg-gradient-to-br from-blue-50 to-indigo-100 rounded-2xl shadow-lg p-6 border-2 border-cyan-200 relative overflow-hidden"
                   >
+                    <div className="absolute top-0 right-0 w-14 h-14 bg-cyan-200 rounded-full -mr-7 -mt-7 opacity-50"></div>
                     <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2 mb-4 font-handwritten">
                       <Sparkles size={20} />
                       Tips
                     </h2>
                     <div className="space-y-3 text-sm text-gray-600 font-handwritten">
-                      <p>
-                        • Use Chrome, Edge, or Safari for best compatibility
-                      </p>
-                      <p>• Allow microphone permissions when prompted</p>
                       <p>• Speak clearly and at a natural pace</p>
-                      <p>• Reduce background noise for better accuracy</p>
                       <p>• I remember previous conversations for context</p>
-                      <p>• Data automatically saves on close or session end</p>
+                      <p>• Reduce background noise for better accuracy</p>
+                      <p>• Allow me to finish speaking before responding</p>
+                      <p>• Use Chrome or Edge for best compatibility</p>
+                      <p>
+                        • Session progress helps track our conversation depth
+                      </p>
                     </div>
                   </motion.div>
                 </div>
@@ -2108,7 +1737,6 @@ export default function VoiceMoodDashboard() {
   );
 }
 
-// Keep the existing OnboardingQuestionnaire and SettingsProfile components exactly as they were
 function OnboardingQuestionnaire({
   questions,
   currentQuestion,
@@ -2141,6 +1769,11 @@ function OnboardingQuestionnaire({
         animate={{ opacity: 1, scale: 1 }}
         className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-8 max-w-2xl w-full shadow-2xl relative overflow-hidden"
       >
+        {/* Decorative elements */}
+        <div className="absolute top-0 left-0 w-20 h-20 bg-pink-300 rounded-full -ml-10 -mt-10 opacity-40"></div>
+        <div className="absolute bottom-0 right-0 w-16 h-16 bg-yellow-300 rounded-full -mr-8 -mb-8 opacity-40"></div>
+        <div className="absolute top-1/2 right-10 w-8 h-8 bg-green-300 rounded-full opacity-60"></div>
+
         <div className="text-center mb-8 relative z-10">
           <div className="flex items-center justify-between mb-4">
             <button
@@ -2484,11 +2117,114 @@ function SettingsProfile() {
     }));
   };
 
+  const handleOnboardingAnswerChange = (question: string, value: string) => {
+    setProfile((prev) => ({
+      ...prev,
+      onboardingAnswers: { ...prev.onboardingAnswers, [question]: value },
+    }));
+  };
+
+  const triggerN8nWebhook = async (eventType: string, data: any) => {
+    try {
+      const webhookUrl = process.env.NEXT_PUBLIC_N8N_WEBHOOK_URL;
+
+      // If no webhook URL is set, use the local API route as default
+      const defaultWebhookUrl =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/api/webhook`
+          : "https://voice-agent-phi-virid.vercel.app/api/webhook";
+
+      const finalWebhookUrl = webhookUrl || defaultWebhookUrl;
+
+      // Validate URL
+      if (
+        !finalWebhookUrl ||
+        finalWebhookUrl.includes("undefined") ||
+        finalWebhookUrl.includes("your_single_n8n_webhook_url_here")
+      ) {
+        console.warn("⚠️ Webhook URL not properly configured, using default");
+        return true; // Don't break the app
+      }
+
+      const completeData = {
+        eventType,
+        timestamp: new Date().toISOString(),
+        userProfile: userProfile || {
+          id: "user_" + Date.now(),
+          name: "",
+          email: onboardingData.contactEmail,
+          phone: onboardingData.contactPhone,
+          timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+          freeTime: onboardingData.freeTimeSlots,
+          contactPreference: onboardingData.contactMethod,
+          onboardingAnswers: onboardingData,
+          preferences: {
+            checkIns: onboardingData.checkInTimes || [],
+            callReminders: true,
+            moodTracking: true,
+            sessionProgress: true,
+            contextAwareness: true,
+          },
+          conversationContext: {
+            recentTopics: conversationContext,
+            emotionalState: "neutral",
+            sessionProgress: sessionProgress,
+            lastSessionDate: new Date(),
+          },
+        },
+        onboardingData: onboardingData,
+        conversations: conversations.slice(-5), // Send last 5 conversations for context
+        currentSessionProgress: sessionProgress,
+        conversationContext: conversationContext,
+        appVersion: "2.0.0",
+        source: "voice-mood-dashboard",
+        ...data,
+      };
+
+      console.log(`📤 Sending ${eventType} to:`, finalWebhookUrl);
+      console.log("📊 Webhook payload:", completeData);
+
+      const response = await fetch(finalWebhookUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(completeData),
+      });
+
+      // Handle both JSON and text responses
+      let responseData;
+      const contentType = response.headers.get("content-type");
+
+      if (contentType && contentType.includes("application/json")) {
+        responseData = await response.json();
+      } else {
+        const textResponse = await response.text();
+        console.log("📨 Webhook text response:", textResponse);
+        responseData = { message: textResponse, status: "success" };
+      }
+
+      if (!response.ok) {
+        throw new Error(
+          `HTTP ${response.status}: ${JSON.stringify(responseData)}`
+        );
+      }
+
+      console.log("✅ Webhook successful:", responseData);
+      return true;
+    } catch (error) {
+      console.error("❌ Webhook failed:", error);
+      // Don't break the user experience if webhook fails
+      return false;
+    }
+  };
+
   const handleSaveChanges = async () => {
     setIsLoading(true);
     setSaveStatus("saving");
 
     try {
+      // Update onboarding data with current profile changes
       const updatedOnboardingData = {
         ...profile.onboardingAnswers,
         contactEmail: profile.email,
@@ -2511,8 +2247,25 @@ function SettingsProfile() {
       }
 
       setProfile(updatedProfile);
-      setSaveStatus("success");
-      setTimeout(() => setSaveStatus("idle"), 2000);
+
+      const webhookSuccess = await triggerN8nWebhook("profile_updated", {
+        action: "profile_update",
+        name: profile.name,
+        email: profile.email,
+        phone: profile.phone,
+        timezone: profile.timezone,
+        freeTime: profile.freeTime,
+        contactPreference: profile.contactPreference,
+        preferences: profile.preferences,
+        updatedOnboardingAnswers: updatedOnboardingData,
+      });
+
+      if (webhookSuccess) {
+        setSaveStatus("success");
+        setTimeout(() => setSaveStatus("idle"), 2000);
+      } else {
+        setSaveStatus("error");
+      }
     } catch (error) {
       console.error("Error saving profile:", error);
       setSaveStatus("error");
@@ -2523,6 +2276,12 @@ function SettingsProfile() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-purple-900 via-blue-900 to-indigo-900 text-white rounded-2xl p-6 relative overflow-hidden font-sans">
+      <div className="absolute inset-0 overflow-hidden">
+        <div className="absolute -top-40 -left-40 w-80 h-80 bg-pink-500/20 rounded-full blur-3xl animate-pulse" />
+        <div className="absolute top-60 -right-20 w-60 h-60 bg-blue-500/20 rounded-full blur-3xl animate-pulse delay-1000" />
+        <div className="absolute -bottom-20 left-1/3 w-72 h-72 bg-purple-500/20 rounded-full blur-3xl animate-pulse delay-500" />
+      </div>
+
       <div className="relative z-10">
         <motion.div
           initial={{ opacity: 0, y: -20 }}
@@ -2548,7 +2307,7 @@ function SettingsProfile() {
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
-              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl"
+              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl glow"
             >
               <div className="flex items-center gap-3 mb-6">
                 <div className="p-2 rounded-xl bg-blue-500/20 border border-blue-400/30">
@@ -2655,7 +2414,7 @@ function SettingsProfile() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 }}
-              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl"
+              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl glow"
             >
               <div className="flex items-center gap-3 mb-6">
                 <div className="p-2 rounded-xl bg-green-500/20 border border-green-400/30">
@@ -2720,7 +2479,7 @@ function SettingsProfile() {
             <motion.div
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
-              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl"
+              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl glow"
             >
               <div className="flex items-center gap-3 mb-6">
                 <div className="p-2 rounded-xl bg-purple-500/20 border border-purple-400/30">
@@ -2837,7 +2596,7 @@ function SettingsProfile() {
               initial={{ opacity: 0, x: 20 }}
               animate={{ opacity: 1, x: 0 }}
               transition={{ delay: 0.3 }}
-              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl"
+              className="bg-white/10 backdrop-blur-md rounded-3xl border-2 border-white/20 p-6 shadow-2xl glow"
             >
               <div className="flex items-center gap-3 mb-4">
                 <div className="p-2 rounded-xl bg-yellow-500/20 border border-yellow-400/30">
@@ -2881,6 +2640,19 @@ function SettingsProfile() {
           </div>
         </div>
       </div>
+
+      <style jsx>{`
+        .glow {
+          box-shadow: 0 0 20px rgba(59, 130, 246, 0.1),
+            0 0 40px rgba(59, 130, 246, 0.1),
+            inset 0 1px 0 rgba(255, 255, 255, 0.1);
+        }
+        .glow:hover {
+          box-shadow: 0 0 30px rgba(59, 130, 246, 0.2),
+            0 0 60px rgba(59, 130, 246, 0.15),
+            inset 0 1px 0 rgba(255, 255, 255, 0.2);
+        }
+      `}</style>
     </div>
   );
 }
